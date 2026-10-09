@@ -314,3 +314,32 @@ def test_oversized_combined_result_fails_without_endless_submission(cluster):
     final = cluster.state(task["id"], "FAILED")
     assert final["attempt_count"] == 1
     assert "combined result too large" in final["error"]
+
+
+def test_failed_dag_stops_uncooperative_sibling_and_releases_slot(cluster):
+    operator = cluster.root / "sibling.py"
+    operator.write_text("import time\ndef run(context, inputs):\n    time.sleep(60)\n")
+    cluster.env["PYTHONPATH"] += os.pathsep + str(cluster.root)
+    cluster.worker()
+    task = cluster.submit(
+        steps=[
+            {"id": "stuck", "callable": "sibling:run"},
+            {"id": "bad", "callable": "dataflowcore.operators:fail"},
+        ]
+    )
+    final = cluster.state(task["id"], "FAILED")
+    assert final["attempt_count"] == 1
+    assert cluster.state(cluster.submit()["id"], "SUCCEEDED")
+
+
+def test_control_outage_beyond_lease_forces_full_retry(cluster):
+    cluster.worker()
+    task = cluster.submit(seconds=5)
+    cluster.state(task["id"], "RUNNING")
+    cluster.control.kill()
+    cluster.control.wait(timeout=3)
+    # This wait models an actual outage exceeding the configured three-second lease.
+    time.sleep(4)
+    cluster.control = cluster.start_control()
+    final = cluster.state(task["id"], "SUCCEEDED")
+    assert [a["state"] for a in final["attempts"]] == ["LOST", "SUCCEEDED"]
