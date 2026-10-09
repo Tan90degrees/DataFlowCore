@@ -80,7 +80,7 @@ def chunk(context, inputs):
                 break
             buffer = buffer[size - overlap :]
             offset += size - overlap
-    return {"path": str(target), "count": count}
+    return {"path": str(target), "count": count, "chunk_size": size, "overlap": overlap}
 
 
 def statistics(context, inputs):
@@ -154,7 +154,14 @@ def embed(context, inputs):
         ):
             out.write(canonical(row) + "\n")
             context.report(count, inputs["chunk"]["count"], "embedded chunks")
-    return {"path": str(target), "count": inputs["chunk"]["count"]}
+    return {
+        "path": str(target),
+        "count": inputs["chunk"]["count"],
+        "chunk_size": inputs["chunk"]["chunk_size"],
+        "overlap": inputs["chunk"]["overlap"],
+        "embedding_profile": context.parameters.get("embedding_profile", "fixture-sha256-v1"),
+        "cpu_rounds": rounds,
+    }
 
 
 def index(context, inputs):
@@ -167,10 +174,10 @@ def index(context, inputs):
     version = fingerprint(
         {
             "input_sha256": input_sha256,
-            "chunk_size": context.parameters.get("chunk_size", 512),
-            "overlap": context.parameters.get("overlap", 32),
-            "embedding_profile": context.parameters.get("embedding_profile", "fixture-sha256-v1"),
-            "cpu_rounds": context.parameters.get("cpu_rounds", 0),
+            "chunk_size": inputs["embed"]["chunk_size"],
+            "overlap": inputs["embed"]["overlap"],
+            "embedding_profile": inputs["embed"]["embedding_profile"],
+            "cpu_rounds": inputs["embed"]["cpu_rounds"],
         }
     )
     conn = sqlite3.connect(target, timeout=15)

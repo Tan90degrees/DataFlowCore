@@ -1093,12 +1093,17 @@ function renderDAG() {
       h(
         "label",
         {},
-        "节点参数 JSON",
+        "算子配置参数 JSON（提交时填写）",
         h(
           "textarea",
           { id: "node-parameters", rows: 6 },
           JSON.stringify(selectedStep.parameters || {}, null, 2),
         ),
+      ),
+      h(
+        "p",
+        { class: "hint" },
+        "算子通过 context.parameters 获取配置，通过 inputs 获取上游输出。节点配置覆盖同名任务级参数；提交后配置随任务保存，重试沿用。",
       ),
       h(
         "div",

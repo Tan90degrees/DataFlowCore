@@ -24,7 +24,7 @@ class Pipeline:
                 "id": step_id,
                 "callable": reference,
                 "depends_on": list(depends_on),
-                "parameters": parameters or {},
+                "parameters": {} if parameters is None else parameters,
             }
         )
         return self

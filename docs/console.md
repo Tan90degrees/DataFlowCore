@@ -90,3 +90,5 @@ DATAFLOW_TEST_PYTHON=python npm test
 浏览器测试启动一个独立静态 HTTP 来源、真实管控节点和真实 free-threaded 执行器，通过实际 CORS 请求执行。覆盖鉴权失败、筛选/分页、节点编辑与环拒绝、草稿/导出、文件 DAG 执行、六节点文档入库、响应丢失的幂等提交、运行中取消、重试、失败日志、XSS 字符串安全渲染、排空、移动端及网络异常/令牌失效。测试中只有故障注入拦截请求；成功业务响应来自真实 API。
 
 CI 分别运行 Python/PostgreSQL 验证、浏览器验证和 Kubernetes 故障恢复验证，上传前端截图、失败 trace、浏览器报告。独立前端镜像构建与 K8S 前端 Service 的页面/API 代理验证也进入 CI。
+
+算子提交配置与上游结果是独立通道，填写入口、优先级和运行示例见 [operator-parameters.md](operator-parameters.md)。
