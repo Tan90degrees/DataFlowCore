@@ -25,4 +25,5 @@ GET /healthz、/readyz、/version为公开探针；/metrics使用管理员认证
 attempt_id、number、token、完整spec和lease_seconds。续租返回cancel及lease_seconds。
 过期/身份错误/冲突返回409，未知记录404，校验400，认证401，临时数据库故障503。
 成功接口统一200。单步骤JSON256KiB、完成请求1MB、进度256KiB，大结果写文件并返回引用。
-task.log在执行器现场；API保留错误和最后进度，不保留每个业务项的单独事件。
+运行中task.log在执行器现场，保留最后16KiB；API进度中的log_tail同时持久化。
+完成后本地工作目录清理，不保留每个业务项的单独事件。

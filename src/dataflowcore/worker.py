@@ -21,6 +21,44 @@ from .runtime import atomic_json, require_free_threading
 log = logging.getLogger(__name__)
 
 
+class LogCapture:
+    """Drain stdout continuously while keeping only a bounded diagnostic tail."""
+
+    def __init__(self, path):
+        self.file = path.open("wb")
+        self.lock = threading.Lock()
+        self.buffer = b""
+        self.thread = None
+
+    def start(self, stream):
+        def drain():
+            try:
+                while chunk := stream.read1(4096):
+                    with self.lock:
+                        self.buffer = (self.buffer + chunk)[-16384:]
+                        self.file.seek(0)
+                        self.file.write(self.buffer)
+                        self.file.truncate()
+                        self.file.flush()
+            except OSError, ValueError:
+                log.warning("log_capture_closed")
+            finally:
+                stream.close()
+
+        self.thread = threading.Thread(target=drain, name="task-logs", daemon=True)
+        self.thread.start()
+
+    def tail(self):
+        with self.lock:
+            return self.buffer.decode("utf-8", errors="replace")
+
+    def close(self):
+        if self.thread:
+            self.thread.join(timeout=2)
+        with self.lock:
+            self.file.close()
+
+
 @dataclass
 class Running:
     assignment: dict
@@ -86,7 +124,7 @@ class Worker:
         workspace.mkdir()
         path = workspace / "assignment.json"
         atomic_json(path, assignment)
-        log_file = (workspace / "task.log").open("wb")
+        log_file = LogCapture(workspace / "task.log")
         command = [
             sys.executable,
             "-m",
@@ -104,11 +142,16 @@ class Worker:
             command.append("--allow-gil")
         try:
             process = subprocess.Popen(
-                command, stdout=log_file, stderr=subprocess.STDOUT, start_new_session=True
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                env=os.environ | {"PYTHONUNBUFFERED": "1"},
             )
         except BaseException:
             log_file.close()
             raise
+        log_file.start(process.stdout)
         self.running[assignment["attempt_id"]] = Running(
             assignment,
             process,
@@ -152,8 +195,8 @@ class Worker:
         running.process.wait(timeout=2)
         self.signal_group(running, signal.SIGKILL)
         running.log_file.close()
-        # Keep bounded per-attempt logs for diagnostics; remove secrets/spec/progress.
-        (running.workspace / "assignment.json").unlink(missing_ok=True)
+        # Final progress/log tail is already durable; don't fill the executor's ephemeral disk.
+        shutil.rmtree(running.workspace)
         self.running.pop(aid)
 
     def tick(self):
@@ -186,6 +229,7 @@ class Worker:
                 continue
             try:
                 progress = self.read_json(running.workspace / "progress.json", {})
+                progress["log_tail"] = running.log_file.tail()
                 started = time.monotonic()
                 renewed = self.request("renew", {**self.identity(running), "progress": progress})
                 running.deadline = started + renewed["lease_seconds"]

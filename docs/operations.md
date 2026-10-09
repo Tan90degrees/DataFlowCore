@@ -17,9 +17,9 @@ kubectl logs deployment/dataflowcore-control --tail=200
 kubectl logs <worker-pod> --tail=200
 ```
 
-任务stdout/stderr在/work/<session>/<attempt>/task.log，可kubectl exec读取。
-Pod删除后现场日志可能丢失；错误与最后上报进度持久化。/work和/tmp有emptyDir容量
-限制，业务日志由部署日志系统采集。历史任务/产物自动GC尚未实现。
+运行中stdout/stderr尾部在/work/<session>/<attempt>/task.log，可kubectl exec读取。
+最后16KiB通过进度log_tail持久化，任务结束后清理本地工作目录。Pod删除后尚未上报
+的日志可能丢失；完整业务日志由部署日志系统采集。历史任务/产物自动GC尚未实现。
 默认租约30秒、interval2秒、停止宽限5秒、尝试3次。发现时间约为租约加reaper周期，
 数据库/API故障会影响恢复时间。管控长时间不可用，旧任务停止，恢复后允许整文件重试。
 

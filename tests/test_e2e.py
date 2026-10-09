@@ -291,3 +291,26 @@ def test_supervisor_kill_terminates_task_child(cluster):
             return True
 
     assert until(dead)
+
+
+def test_noisy_operator_has_bounded_durable_log_tail(cluster):
+    operator = cluster.root / "noisy.py"
+    operator.write_text("def run(context, inputs):\n    print('x' * 100000)\n    return {}\n")
+    cluster.env["PYTHONPATH"] += os.pathsep + str(cluster.root)
+    cluster.worker()
+    task = cluster.submit(steps=[{"id": "noisy", "callable": "noisy:run"}])
+    final = cluster.state(task["id"], "SUCCEEDED")
+    tail = final["attempts"][0]["progress"]["log_tail"]
+    assert 1000 < len(tail) <= 16384
+    assert not list(cluster.root.glob("worker-*/*/*/assignment.json"))
+
+
+def test_oversized_combined_result_fails_without_endless_submission(cluster):
+    operator = cluster.root / "large.py"
+    operator.write_text("def run(context, inputs):\n    return {'data': 'x' * 240000}\n")
+    cluster.env["PYTHONPATH"] += os.pathsep + str(cluster.root)
+    cluster.worker()
+    task = cluster.submit(steps=[{"id": f"s{i}", "callable": "large:run"} for i in range(4)])
+    final = cluster.state(task["id"], "FAILED")
+    assert final["attempt_count"] == 1
+    assert "combined result too large" in final["error"]

@@ -73,10 +73,16 @@ class Progress:
             if sid:
                 self.steps[sid].update(values)
             completed = sum(s["state"] == "SUCCEEDED" for s in self.steps.values())
-            atomic_json(
-                self.path,
-                {"steps": self.steps, "completed_steps": completed, "total_steps": len(self.steps)},
-            )
+            snapshot = {
+                "steps": self.steps,
+                "completed_steps": completed,
+                "total_steps": len(self.steps),
+            }
+            if len(canonical(snapshot)) > 200_000:
+                for step in self.steps.values():
+                    step.pop("message", None)
+                    step.pop("error", None)
+            atomic_json(self.path, snapshot)
 
 
 @dataclass(frozen=True)
@@ -214,6 +220,8 @@ def child_main(assignment_path, workspace, data_root, allow_gil=False):
     try:
         result = run_dag(assignment, workspace, data_root, allow_gil)
         payload = {"state": "SUCCEEDED", "result": result, "error": None, "retryable": False}
+        if len(canonical(payload)) > 900_000:
+            raise PermanentError("combined result too large; return fewer file references")
     except Cancelled as exc:
         payload = {"state": "CANCELLED", "error": str(exc), "retryable": False}
     except Exception as exc:

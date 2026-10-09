@@ -270,7 +270,7 @@ class Store:
             "token": attempt["token"],
             "number": attempt["number"],
             "spec": json.loads(task["spec"]),
-            "lease_seconds": self.lease_seconds,
+            "lease_seconds": max(0.0, min(attempt["lease_until"], attempt["deadline"]) - db.now()),
         }
 
     @staticmethod
@@ -310,6 +310,8 @@ class Store:
             return {"cancel": task["state"] == "STOPPING", "lease_seconds": max(0.0, until - now)}
 
     def complete(self, tid, aid, session_id, token, state, result=None, error=None, retryable=True):
+        if type(retryable) is not bool or (error is not None and not isinstance(error, str)):
+            raise Invalid("retryable must be boolean and error must be text")
         if state not in TERMINAL:
             raise Invalid("invalid completion state")
         payload = {"state": state, "result": result, "error": error, "retryable": retryable}

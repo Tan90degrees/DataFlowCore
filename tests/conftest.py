@@ -1,6 +1,6 @@
 import os
 import uuid
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import pytest
 
@@ -23,7 +23,7 @@ def store(request, tmp_path):
         dsn = (
             base
             + ("&" if "?" in base else "?")
-            + urlencode({"options": f"-c search_path={schema}"})
+            + urlencode({"options": f"-c search_path={schema}"}, quote_via=quote)
         )
     else:
         dsn = "sqlite:///" + str(tmp_path / "state.db")

@@ -12,6 +12,12 @@ spec:
     spec:
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 90
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app: "{{ .Release.Name }}-worker"}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001

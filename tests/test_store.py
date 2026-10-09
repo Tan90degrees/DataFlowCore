@@ -26,7 +26,10 @@ def test_claim_replay_and_success_replay(store, spec):
     task = store.submit(spec, "submit")
     register(store)
     assignment = store.claim("worker", "claim")
-    assert store.claim("worker", "claim") == assignment
+    replay = store.claim("worker", "claim")
+    assert replay["attempt_id"] == assignment["attempt_id"]
+    assert replay["token"] == assignment["token"]
+    assert 0 < replay["lease_seconds"] <= assignment["lease_seconds"]
     assert assignment["task_id"] == task["id"]
     assert complete(store, assignment)["accepted"]
     assert complete(store, assignment)["accepted"]
