@@ -24,6 +24,11 @@ def parser():
     control.add_argument("--port", type=int, default=8080)
     control.add_argument("--data-root", default=os.getenv("DATAFLOW_DATA_ROOT", "."))
     control.add_argument("--lease", type=float, default=30)
+    control.add_argument(
+        "--cors-origins",
+        default=os.getenv("DATAFLOW_CORS_ORIGINS", ""),
+        help="comma-separated exact browser origins; empty disables cross-origin access",
+    )
     control.add_argument("--insecure", action="store_true", help="development only")
     control.add_argument("--allow-gil", action="store_true", help="development only")
     worker = commands.add_parser("worker", help="run executor supervisor")
@@ -84,6 +89,9 @@ def main():
             os.getenv("DATAFLOW_WORKER_TOKEN", ""),
             args.insecure,
             args.lease,
+            cors_origins=[
+                origin.strip() for origin in args.cors_origins.split(",") if origin.strip()
+            ],
         )
     elif args.command == "worker":
         from .worker import Worker

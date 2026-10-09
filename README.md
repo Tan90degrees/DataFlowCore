@@ -169,3 +169,11 @@ bash e2e/run.sh
 对象存储、断点续跑、控制面主备、租户公平调度、自动 HPA 和历史产物 GC 是后续扩展。
 当前支持手动扩容执行器，队列与容量自动匹配。CPU/内存为准入预算，Pod resources
 是容器资源边界。单控制面保证可恢复管理，不保证故障期间API持续可用。
+
+## 前端管控台
+
+独立静态前端通过 API 管理任务、查看 DAG 进度/日志/事件/结果、停止与重试任务、观察和排空执行器；编排器支持编辑节点与依赖、JSON 导入/导出、API 校验和提交。前后端分别构建、部署，无生产 npm 依赖。
+
+`docker compose up --build -d` 后打开 **http://127.0.0.1:8081**，连接地址使用 `/api`，输入 `.env` 中的管理令牌。Kubernetes 可设置 `console.enabled=true` 启用独立前端 Deployment/Service。
+
+详见 [前端部署、功能边界与浏览器验收](docs/console.md)。

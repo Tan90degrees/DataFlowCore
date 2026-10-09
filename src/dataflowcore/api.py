@@ -21,7 +21,15 @@ class Server(ThreadingHTTPServer):
     request_queue_size = 64
 
     def __init__(
-        self, address, store, data_root, admin_token, worker_token, insecure=False, reap_interval=1
+        self,
+        address,
+        store,
+        data_root,
+        admin_token,
+        worker_token,
+        insecure=False,
+        reap_interval=1,
+        cors_origins=(),
     ):
         if not insecure and (
             len(admin_token) < 24 or len(worker_token) < 24 or admin_token == worker_token
@@ -30,6 +38,20 @@ class Server(ThreadingHTTPServer):
         self.store, self.data_root = store, data_root
         self.admin_token, self.worker_token, self.insecure = admin_token, worker_token, insecure
         self.reap_interval = reap_interval
+        self.cors_origins = frozenset(cors_origins)
+        for origin in self.cors_origins:
+            url = urlsplit(origin)
+            if (
+                "*" in origin
+                or url.scheme not in ("http", "https")
+                or not url.netloc
+                or url.username
+                or url.password
+                or url.path
+                or url.query
+                or url.fragment
+            ):
+                raise Invalid("CORS origins must be exact http(s) origins without paths")
         self.stopped = threading.Event()
         self.slots = threading.BoundedSemaphore(64)
         super().__init__(address, Handler)
@@ -79,6 +101,13 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         log.info("http peer=%s %s", self.client_address[0], fmt % args)
 
+    def end_headers(self):
+        origin = self.headers.get("Origin")
+        self.send_header("Vary", "Origin")
+        if origin in self.server.cors_origins:
+            self.send_header("Access-Control-Allow-Origin", origin)
+        super().end_headers()
+
     def send_json(self, status, value):
         data = json.dumps(value, allow_nan=False).encode()
         self.send_response(status)
@@ -106,6 +135,10 @@ class Handler(BaseHTTPRequestHandler):
     def dispatch(self, method):
         path = urlsplit(self.path).path
         try:
+            origin = self.headers.get("Origin")
+            if origin and origin not in self.server.cors_origins:
+                self.send_json(403, {"error": "browser origin is not allowed"})
+                return
             if method == "GET" and path in ("/healthz", "/version"):
                 self.send_json(200, {"ok": True, "version": __version__})
                 return
@@ -161,6 +194,20 @@ class Handler(BaseHTTPRequestHandler):
     def route(self, method, path, data):
         store = self.server.store
         parts = path.strip("/").split("/")
+        if method == "GET" and path == "/v1/overview":
+            return {"task_counts": store.stats(), "version": __version__}
+        if method == "POST" and path == "/v1/dags/validate":
+            spec = TaskSpec.parse(data)
+            resolved, layers = set(), []
+            while len(resolved) < len(spec.steps):
+                layer = [
+                    step["id"]
+                    for step in spec.steps
+                    if step["id"] not in resolved and set(step.get("depends_on", [])) <= resolved
+                ]
+                layers.append(layer)
+                resolved.update(layer)
+            return {"valid": True, "spec": spec.json(), "layers": layers}
         if method == "POST" and path == "/v1/tasks":
             spec = TaskSpec.parse(data)
             source = under_root(spec.input_path, self.server.data_root)
@@ -230,11 +277,55 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         self.dispatch("POST")
 
+    def do_OPTIONS(self):
+        origin = self.headers.get("Origin")
+        path = urlsplit(self.path).path
+        requested = {
+            name.strip().lower()
+            for name in self.headers.get("Access-Control-Request-Headers", "").split(",")
+            if name.strip()
+        }
+        if (
+            origin not in self.server.cors_origins
+            or self.headers.get("Access-Control-Request-Method") not in ("GET", "POST")
+            or not requested <= {"authorization", "content-type", "idempotency-key"}
+            or not path.startswith("/v1/")
+            or path.startswith("/v1/worker/")
+        ):
+            self.send_json(403, {"error": "CORS preflight is not allowed"})
+            return
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST")
+        self.send_header(
+            "Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key"
+        )
+        self.send_header("Access-Control-Max-Age", "600")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
-def serve(dsn, host, port, data_root, admin_token, worker_token, insecure=False, lease=30):
+
+def serve(
+    dsn,
+    host,
+    port,
+    data_root,
+    admin_token,
+    worker_token,
+    insecure=False,
+    lease=30,
+    cors_origins=(),
+):
     store = Store(dsn, lease)
     store.migrate()
-    server = Server((host, port), store, data_root, admin_token, worker_token, insecure)
+    server = Server(
+        (host, port),
+        store,
+        data_root,
+        admin_token,
+        worker_token,
+        insecure,
+        cors_origins=cors_origins,
+    )
     import signal
 
     def stop(*_):

@@ -225,3 +225,7 @@ __marimo__/
 /.env
 /*.db
 /dist/
+# Independent console dependencies and acceptance artifacts
+node_modules/
+frontend/test-results/
+frontend/playwright-report/

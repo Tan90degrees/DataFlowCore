@@ -6,3 +6,8 @@ recursive-include examples *.py *.json
 recursive-include tests *.py
 recursive-include e2e *.py *.sh *.yaml
 recursive-include .github *.yml
+recursive-include frontend *.html *.js *.css *.json *.conf.template *.py
+include frontend/Dockerfile frontend/.dockerignore
+prune frontend/node_modules
+prune frontend/test-results
+prune frontend/playwright-report
