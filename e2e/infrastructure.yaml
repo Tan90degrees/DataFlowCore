@@ -55,3 +55,36 @@ spec:
   volumeName: dataflowcore-data
   resources:
     requests: {storage: 1Gi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: embedding-fixture
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: embedding-fixture}
+  template:
+    metadata:
+      labels: {app: embedding-fixture}
+    spec:
+      containers:
+        - name: model
+          image: dataflowcore:e2e
+          imagePullPolicy: IfNotPresent
+          command: [python, -m, dataflowcore.examples.embedding_fixture]
+          args: [--host, 0.0.0.0, --port, "8081", --delay, "0.01"]
+          ports: [{containerPort: 8081}]
+          readinessProbe:
+            tcpSocket: {port: 8081}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: embedding-fixture
+spec:
+  selector: {app: embedding-fixture}
+  ports: [{port: 8081, targetPort: 8081}]

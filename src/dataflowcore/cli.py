@@ -38,7 +38,7 @@ def parser():
     worker.add_argument("--stop-grace", type=float, default=5)
     worker.add_argument("--allow-gil", action="store_true", help="development only")
     worker.add_argument("--runtime-version", default=__version__)
-    for name in ("submit", "get", "cancel", "retry", "events", "list", "workers", "wait"):
+    for name in ("submit", "get", "cancel", "retry", "events", "list", "workers", "wait", "drain"):
         sub = commands.add_parser(name)
         sub.add_argument("--url", default=os.getenv("DATAFLOW_URL", "http://127.0.0.1:8080"))
         sub.add_argument("--key", default=None)
@@ -46,6 +46,11 @@ def parser():
             sub.add_argument("value", help="spec JSON path" if name == "submit" else "task id")
         if name == "wait":
             sub.add_argument("--timeout", type=float, default=3600)
+        if name == "list":
+            sub.add_argument("--state")
+            sub.add_argument("--pool")
+            sub.add_argument("--limit", type=int, default=100)
+            sub.add_argument("--cursor")
     commands.add_parser("doctor", help="verify actual free-threaded runtime")
     migrate = commands.add_parser("migrate")
     migrate.add_argument(
@@ -119,11 +124,24 @@ def main():
         client = Client(args.url, os.getenv("DATAFLOW_ADMIN_TOKEN", ""))
         if args.command == "submit":
             result = client.submit(json.loads(Path(args.value).read_text()), args.key)
-        elif args.command in ("get", "cancel"):
+        elif args.command in ("get", "cancel", "drain"):
             result = getattr(client, args.command)(args.value)
         elif args.command == "retry":
             result = client.retry(args.value, args.key)
-        elif args.command in ("list", "workers", "events"):
+        elif args.command == "list":
+            from urllib.parse import urlencode
+
+            query = {
+                "limit": args.limit,
+                "summary": 1,
+                "state": args.state,
+                "pool": args.pool,
+                "cursor": args.cursor,
+            }
+            result = client.request(
+                "GET", "/v1/tasks?" + urlencode({k: v for k, v in query.items() if v is not None})
+            )
+        elif args.command in ("workers", "events"):
             path = (
                 f"/v1/tasks/{args.value}/events"
                 if args.command == "events"

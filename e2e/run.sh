@@ -2,7 +2,10 @@
 set -euo pipefail
 mkdir -p .e2e/data
 chmod 777 .e2e/data
-printf 'hello world hello\n' > .e2e/data/input.txt
+python3 - <<'PY'
+from pathlib import Path
+Path('.e2e/data/input.txt').write_text(('业务文档 DataFlow reference paragraph.\n' * 500)[:8192])
+PY
 data_path="$(pwd)/.e2e/data"
 cat > .e2e/kind.yaml <<EOF
 kind: Cluster
@@ -25,6 +28,7 @@ kind create cluster --name dataflowcore --config .e2e/kind.yaml --wait 120s
 kind load docker-image dataflowcore:e2e --name dataflowcore
 kubectl apply -f e2e/infrastructure.yaml
 kubectl rollout status deployment/postgres --timeout=180s
+kubectl rollout status deployment/embedding-fixture --timeout=180s
 # Credentials are fixture values for a disposable isolated cluster.
 kubectl create secret generic dataflowcore-secrets \
   --from-literal=database-url=postgresql://dataflow:dataflow-test@postgres:5432/dataflow \

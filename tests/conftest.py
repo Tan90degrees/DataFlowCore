@@ -4,8 +4,18 @@ from urllib.parse import quote, urlencode
 
 import pytest
 
+from dataflowcore import __version__
 from dataflowcore.contracts import TaskSpec
 from dataflowcore.store import Store
+
+
+@pytest.fixture
+def cluster(tmp_path, store):
+    from tests.test_e2e import Cluster
+
+    value = Cluster(tmp_path, store.dsn)
+    yield value
+    value.close()
 
 
 @pytest.fixture(
@@ -53,7 +63,7 @@ def register(store, session="worker", **kwargs):
         "session_id": session,
         "name": session,
         "pool": "default",
-        "runtime_version": "0.1.0",
+        "runtime_version": __version__,
         "slots": 2,
         "cpu": 4,
         "memory_mb": 1024,

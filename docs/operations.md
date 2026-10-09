@@ -4,7 +4,7 @@
 |---|---|
 | QUEUED未运行 | workers的online、pool/runtime_version和资源/槽位 |
 | LOST后重排 | Attempt.error中的租约过期或deadline |
-| FAILED | 每次Attempt错误，修复输入/算子后手动retry |
+| FAILED | 修复算子后retry；输入内容变更需重新submit |
 | STOPPING | 等待取消确认；执行器失联时等待租约到期 |
 | 管控503 | PostgreSQL连接、schema与事务 |
 | GIL开启 | doctor、算子C扩展兼容性 |
@@ -13,6 +13,8 @@
 dataflow get <task-id>
 dataflow events <task-id>
 dataflow workers
+dataflow list --state QUEUED --pool default --limit 50
+dataflow drain <worker-session-id>
 kubectl logs deployment/dataflowcore-control --tail=200
 kubectl logs <worker-pod> --tail=200
 ```
@@ -36,3 +38,11 @@ kubectl logs <worker-pod> --tail=200
 
 e2e-evidence包含K8S任务历史。仅对专用测试数据库设置DATAFLOW_TEST_DATABASE_URL，
 测试每例创建/删除独立schema。
+
+排空是持久化、单向的会话状态，心跳不会撤销。已有任务完成后再替换该Pod，
+新进程注册新会话；排空不会自动退出进程。不要把排空标记设置在整个Deployment
+模板中。通常滚动升级先排空目标会话、等其任务结束，再终止Pod。
+
+参考业务故障验收见 [业务报告](business-validation.md)，性能基准见
+[性能报告](performance.md)。CI上传business-performance（真实PostgreSQL的24/120
+文件基准）以及e2e-evidence（K8S业务流的故障和排空记录）。

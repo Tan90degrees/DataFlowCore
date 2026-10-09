@@ -6,6 +6,7 @@ design makes cancellation, claims, expiry and completion serializable across API
 No locks/transactions are held while business code or network requests run.
 """
 
+import base64
 import json
 import sqlite3
 import uuid
@@ -20,6 +21,8 @@ from .contracts import (
     TaskSpec,
     canonical,
     fingerprint,
+    integer,
+    number,
 )
 
 SCHEMA = """
@@ -130,6 +133,17 @@ class Store:
                 db.execute("INSERT INTO schema_version(version) VALUES (1)")
             elif {v["version"] for v in versions} != {1}:
                 raise Invalid("unsupported database schema version")
+            pool = self.json_field("pool")
+            runtime = self.json_field("runtime_version")
+            db.execute(
+                f"CREATE INDEX IF NOT EXISTS tasks_routing ON tasks "
+                f"(({pool}), ({runtime}), state, available_at, created_at)"
+            )
+
+    def json_field(self, name, numeric=False):
+        # Names are internal constants, never interpolated from user input.
+        value = f"spec::jsonb->>'{name}'" if self.postgres else f"json_extract(spec, '$.{name}')"
+        return f"CAST(({value}) AS INTEGER)" if numeric else value
 
     @staticmethod
     def event(db, task_id, attempt_id, kind, payload, now):
@@ -181,10 +195,18 @@ class Store:
         with self.transaction() as db:
             self.worker(db, session_id)
             db.execute(
-                "UPDATE workers SET last_seen = ?, draining = ? WHERE session_id = ?",
+                "UPDATE workers SET last_seen = ?, "
+                "draining = CASE WHEN draining = 1 THEN 1 ELSE ? END WHERE session_id = ?",
                 (db.now(), int(draining), session_id),
             )
-        return {"ok": True}
+            actual = self.worker(db, session_id)["draining"]
+        return {"ok": True, "draining": bool(actual)}
+
+    def drain(self, session_id):
+        with self.transaction() as db:
+            self.worker(db, session_id)
+            db.execute("UPDATE workers SET draining = 1 WHERE session_id = ?", (session_id,))
+        return {"session_id": session_id, "draining": True}
 
     @staticmethod
     def worker(db, session_id):
@@ -219,11 +241,16 @@ class Store:
             ]
             cpu_left = worker["cpu"] - sum(s["cpu"] for s in used)
             mem_left = worker["memory_mb"] - sum(s["memory_mb"] for s in used)
-            # Bounded scan: drain incompatible tasks or use separate pools to avoid starvation.
+            # Filter eligibility before LIMIT: unrelated pools or oversized files
+            # must never starve a runnable task behind the first 1000 queue entries.
             candidates = db.all(
                 "SELECT * FROM tasks WHERE state = 'QUEUED' AND available_at <= ? "
-                "ORDER BY created_at, id LIMIT 1000",
-                (now,),
+                f"AND ({self.json_field('pool')}) = ? "
+                f"AND ({self.json_field('runtime_version')}) = ? "
+                f"AND {self.json_field('cpu', True)} <= ? "
+                f"AND {self.json_field('memory_mb', True)} <= ? "
+                "ORDER BY created_at, id LIMIT 1",
+                (now, worker["pool"], worker["runtime_version"], cpu_left, mem_left),
             )
             for task in candidates:
                 spec = json.loads(task["spec"])
@@ -458,6 +485,83 @@ class Store:
                     "SELECT * FROM tasks ORDER BY created_at DESC, id DESC LIMIT ?", (limit,)
                 )
             ]
+
+    def task_page(self, limit=100, cursor=None, state=None, pool=None, summary=False):
+        integer(limit, "limit", 1, 100)
+        clauses, values = [], []
+        if state is not None:
+            if state not in TERMINAL | ACTIVE | {"QUEUED"}:
+                raise Invalid("invalid task state filter")
+            clauses.append("state = ?")
+            values.append(state)
+        if pool is not None:
+            if not isinstance(pool, str) or not 1 <= len(pool) <= 4096:
+                raise Invalid("invalid pool filter")
+            clauses.append(f"({self.json_field('pool')}) = ?")
+            values.append(pool)
+        if cursor:
+            try:
+                if len(cursor) > 500:
+                    raise ValueError()
+                created, tid = json.loads(base64.urlsafe_b64decode(cursor))
+                number(created, "cursor timestamp", 0, 1e15)
+                if not isinstance(tid, str) or not 1 <= len(tid) <= 100:
+                    raise ValueError()
+            except (ValueError, TypeError, UnicodeError) as exc:
+                raise Invalid("invalid task cursor") from exc
+            clauses.append("(created_at < ? OR (created_at = ? AND id < ?))")
+            values.extend([created, created, tid])
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        with self.transaction(False) as db:
+            rows = db.all(
+                f"SELECT * FROM tasks {where} ORDER BY created_at DESC, id DESC LIMIT ?",
+                (*values, limit + 1),
+            )
+        selected = rows[:limit]
+        tasks = [self.decode_task(r) for r in selected]
+        if summary:
+            tasks = [
+                {
+                    **{k: v for k, v in t.items() if k not in ("spec", "result", "request_key")},
+                    "name": t["spec"]["name"],
+                    "pool": t["spec"]["pool"],
+                }
+                for t in tasks
+            ]
+        next_cursor = None
+        if len(rows) > limit:
+            last = selected[-1]
+            next_cursor = base64.urlsafe_b64encode(
+                canonical([last["created_at"], last["id"]]).encode()
+            ).decode()
+        return {"tasks": tasks, "next_cursor": next_cursor}
+
+    def statuses(self, task_ids):
+        if not isinstance(task_ids, list) or not 1 <= len(task_ids) <= 100:
+            raise Invalid("task_ids must contain 1..100 IDs")
+        if any(not isinstance(t, str) or not 1 <= len(t) <= 100 for t in task_ids):
+            raise Invalid("invalid task ID")
+        placeholders = ",".join("?" for _ in task_ids)
+        with self.transaction(False) as db:
+            rows = db.all(
+                "SELECT t.id, t.state, t.attempt_count, t.current_attempt, t.created_at, "
+                "t.updated_at, t.error, a.progress FROM tasks t LEFT JOIN attempts a "
+                f"ON t.current_attempt = a.id WHERE t.id IN ({placeholders})",
+                task_ids,
+            )
+        statuses = {}
+        for row in rows:
+            progress = json.loads(row["progress"]) if row["progress"] else {}
+            row["progress"] = {
+                k: v
+                for k, v in progress.items()
+                if k in ("fraction", "completed_steps", "total_steps", "elapsed_seconds", "state")
+            }
+            statuses[row["id"]] = row
+        return {
+            "tasks": [statuses[t] for t in dict.fromkeys(task_ids) if t in statuses],
+            "missing": [t for t in dict.fromkeys(task_ids) if t not in statuses],
+        }
 
     def workers(self):
         with self.transaction(False) as db:

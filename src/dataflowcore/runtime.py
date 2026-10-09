@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 
-from .contracts import Invalid, TaskSpec, canonical
+from .contracts import Invalid, TaskSpec, canonical, integer
 
 
 class PermanentError(Exception):
@@ -62,27 +62,72 @@ def atomic_json(path, value):
 
 
 class Progress:
-    def __init__(self, path, steps):
+    def __init__(self, path, steps, flush_interval=0.1):
         self.path = path
         self.lock = threading.Lock()
         self.steps = {s["id"]: {"state": "PENDING"} for s in steps}
+        self.flush_interval, self.last_flush = flush_interval, 0.0
+        self.started = time.monotonic()
+        self.state, self.closed = "RUNNING", False
         self.update()
 
     def update(self, sid=None, **values):
         with self.lock:
+            if self.closed:
+                return
+            transition = sid is None or "state" in values
             if sid:
+                if values.get("state") == "RUNNING":
+                    values["started_at"] = time.time()
+                elif values.get("state") in ("SUCCEEDED", "FAILED", "CANCELLED"):
+                    values["finished_at"] = time.time()
+                    values["duration_seconds"] = max(
+                        0, values["finished_at"] - self.steps[sid].get("started_at", time.time())
+                    )
                 self.steps[sid].update(values)
-            completed = sum(s["state"] == "SUCCEEDED" for s in self.steps.values())
-            snapshot = {
-                "steps": self.steps,
-                "completed_steps": completed,
-                "total_steps": len(self.steps),
-            }
-            if len(canonical(snapshot)) > 200_000:
-                for step in self.steps.values():
-                    step.pop("message", None)
-                    step.pop("error", None)
-            atomic_json(self.path, snapshot)
+            if transition or time.monotonic() - self.last_flush >= self.flush_interval:
+                self.flush_locked()
+
+    def flush_locked(self):
+        completed = sum(s["state"] == "SUCCEEDED" for s in self.steps.values())
+        fractions = sum(
+            1
+            if s["state"] == "SUCCEEDED"
+            else min(1, s.get("completed", 0) / s["total"])
+            if s.get("total") and s["state"] == "RUNNING"
+            else 0
+            for s in self.steps.values()
+        )
+        snapshot = {
+            "steps": self.steps,
+            "completed_steps": completed,
+            "total_steps": len(self.steps),
+            "fraction": fractions / len(self.steps),
+            "state": self.state,
+            "updated_at": time.time(),
+            "elapsed_seconds": time.monotonic() - self.started,
+        }
+        if len(canonical(snapshot)) > 200_000:
+            for step in self.steps.values():
+                step.pop("message", None)
+                step.pop("error", None)
+        if len(canonical(snapshot)) > 200_000:
+            # At the 1000-step contract limit, verbose counters/timestamps may
+            # exceed the renewal budget. Preserve every step's lifecycle state.
+            snapshot["steps"] = {sid: {"state": step["state"]} for sid, step in self.steps.items()}
+        atomic_json(self.path, snapshot)
+        self.last_flush = time.monotonic()
+
+    def finish(self, state):
+        with self.lock:
+            self.state = state
+            for step in self.steps.values():
+                if step["state"] == "PENDING":
+                    step["state"] = "SKIPPED"
+                elif step["state"] == "RUNNING":
+                    step.update(state="CANCELLED", finished_at=time.time())
+            self.flush_locked()
+            self.closed = True
 
 
 @dataclass(frozen=True)
@@ -109,6 +154,36 @@ class Context:
         self._progress.update(
             self.step_id, completed=completed, total=total, message=str(message)[:2000]
         )
+
+    def map(self, fn, items, *, max_workers=4, max_pending=None):
+        """Ordered streaming page/chunk parallelism, with bounded producer prefetch.
+
+        The operator must consume or close the iterator. Running calls must cooperate
+        with check_cancelled; the supervisor terminates uncooperative task processes.
+        """
+        integer(max_workers, "max_workers", 1, 256)
+        pending = max_workers * 2 if max_pending is None else max_pending
+        integer(pending, "max_pending", 1, 4096)
+
+        def invoke(item):
+            self.check_cancelled()
+            result = fn(item)
+            self.check_cancelled()
+            return result
+
+        pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=self.step_id)
+        failed = False
+        try:
+            for value in pool.map(invoke, items, buffersize=pending):
+                self.check_cancelled()
+                yield value
+        except BaseException as exc:
+            failed = not isinstance(exc, GeneratorExit)
+            raise
+        finally:
+            # Closing early is successful only after in-flight calls stop writing.
+            # Failure/cancellation remains nonblocking so the supervisor can force-stop.
+            pool.shutdown(wait=not failed, cancel_futures=True)
 
 
 def resolve_symbol(reference):
@@ -203,13 +278,24 @@ def run_dag(assignment, workspace, data_root, allow_gil=False):
                         "sha256": file_hash(path),
                     }
                 )
+        progress.finish("SUCCEEDED")
+        import resource
+
+        usage = resource.getrusage(resource.RUSAGE_SELF)
         return {
             "steps": results,
             "output_dir": str(output),
             "files": manifest,
             "input_sha256": actual_hash,
             "runtime": runtime_info,
+            "usage": {
+                "cpu_seconds": usage.ru_utime + usage.ru_stime,
+                "peak_rss_bytes": usage.ru_maxrss * (1 if sys.platform == "darwin" else 1024),
+            },
         }
+    except BaseException as exc:
+        progress.finish("CANCELLED" if isinstance(exc, Cancelled) else "FAILED")
+        raise
     finally:
         cancelled.set()
         pool.shutdown(wait=False, cancel_futures=True)

@@ -1,0 +1,20 @@
+{
+  "baseline": {
+    "elapsed_seconds": 12.878077256999859,
+    "files_per_second": 1.8636322426901761,
+    "queue_p95_ms": 11226.0103225708,
+    "poll_requests": 2388
+  },
+  "optimized": {
+    "elapsed_seconds": 3.7967417719996774,
+    "files_per_second": 6.321209458329745,
+    "queue_p95_ms": 3131.988763809204,
+    "poll_requests": 70
+  },
+  "throughput_ratio": 3.3918759900853623,
+  "cpu_embedding_step_median_seconds": {
+    "1": 4.18018364906311,
+    "4": 1.2401494979858398
+  },
+  "cpu_thread_speedup": 3.370709463538274
+}

@@ -1,0 +1,53 @@
+{
+  "runtime": {
+    "python": "3.14.8 free-threading build (main, Oct  3 2026, 01:06:51) [Clang 22.1.3 ]",
+    "free_threaded_build": true,
+    "gil_enabled": false
+  },
+  "package_version": "0.2.0",
+  "measured_at_utc": "2026-10-09T05:32:21Z",
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+  "logical_cpus": 9,
+  "affinity_cpus": 9,
+  "cpu_quota": "800000 100000",
+  "source_digest": "4fef6a6a6d76f7707e0aafbaedc59e51efb6412e51a61a1c3a5b76af824195fa",
+  "business_source_digest": "18518187073f39d25801c88264de493c0f78ed211e59930f314dab2462c1a290",
+  "baseline_revision": null,
+  "config": {
+    "files": 24,
+    "workers": 1,
+    "slots": 4,
+    "interval": 0.5,
+    "characters_per_file": 8192,
+    "fixture_http_delay_seconds": 0.01,
+    "store": "sqlite",
+    "embedding_workers": 4,
+    "cpu_rounds": 0,
+    "polling": "batch"
+  },
+  "elapsed_seconds": 3.8476334799997858,
+  "files_per_second": 6.237600365199373,
+  "chunks_per_second": 106.03920620838934,
+  "submit_p95_ms": 2.440720999857149,
+  "query_p95_ms": 3.481090999684966,
+  "queue_p50_ms": 1568.9713954925537,
+  "queue_p95_ms": 3160.996675491333,
+  "execution_p95_ms": 527.0137786865234,
+  "used_executors": 1,
+  "successful_files": 24,
+  "validated_index_rows": 408,
+  "attempts": 24,
+  "poll_requests": 71,
+  "control_peak_sampled_rss_bytes": null,
+  "fixture_peak_http_requests": 16,
+  "task_peak_rss_bytes": 41598976,
+  "task_cpu_seconds": 3.38484,
+  "step_p95_seconds": {
+    "parse": 0.0009305477142333984,
+    "chunk": 0.0016105175018310547,
+    "stats": 0.0012733936309814453,
+    "embed": 0.07235956192016602,
+    "index": 0.0035381317138671875,
+    "receipt": 0.0006239414215087891
+  }
+}

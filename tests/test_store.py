@@ -157,6 +157,67 @@ def test_registration_immutable_and_drain(store, spec):
 
 
 @pytest.mark.parametrize(
+    "blocked_by",
+    [{"pool": "other"}, {"cpu": 1024}, {"memory_mb": 1048576}, {"runtime_version": "other"}],
+)
+def test_runnable_task_not_starved_by_large_incompatible_queue(store, spec, blocked_by):
+    from dataflowcore.contracts import canonical, fingerprint
+
+    blocked = TaskSpec.parse(spec.json() | blocked_by).json()
+    with store.transaction() as db:
+        now = db.now()
+        for i in range(1001):
+            db.execute(
+                "INSERT INTO tasks (id, request_key, request_hash, spec, state, attempt_count, "
+                "available_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'QUEUED', 0, ?, ?, ?)",
+                (
+                    str(uuid.uuid4()),
+                    str(i),
+                    fingerprint(blocked),
+                    canonical(blocked),
+                    now,
+                    now,
+                    now,
+                ),
+            )
+    runnable = store.submit(spec, "runnable")
+    register(store)
+    assert store.claim("worker", "claim")["task_id"] == runnable["id"]
+
+
+def test_cursor_pagination_filters_and_bulk_statuses(store, spec):
+    ids = {store.submit(spec, str(i))["id"] for i in range(107)}
+    page, seen = store.task_page(limit=25, pool="default", summary=True), set()
+    while True:
+        batch = {t["id"] for t in page["tasks"]}
+        assert not seen & batch
+        assert all("spec" not in t and "result" not in t for t in page["tasks"])
+        seen |= batch
+        if page["next_cursor"] is None:
+            break
+        page = store.task_page(limit=25, cursor=page["next_cursor"], pool="default", summary=True)
+    assert seen == ids
+    assert store.task_page(state="SUCCEEDED")["tasks"] == []
+    chosen = sorted(ids)[:3]
+    statuses = store.statuses(chosen + ["missing"])
+    assert [s["id"] for s in statuses["tasks"]] == chosen
+    assert statuses["missing"] == ["missing"]
+    assert all("spec" not in t and "result" not in t for t in statuses["tasks"])
+    with pytest.raises(Invalid):
+        store.task_page(cursor="bad cursor")
+    with pytest.raises(Invalid):
+        store.statuses(chosen * 40)
+
+
+def test_admin_drain_is_not_undone_by_worker_heartbeat(store, spec):
+    register(store)
+    store.submit(spec, "file")
+    store.drain("worker")
+    assert store.heartbeat("worker", draining=False)["draining"] is True
+    assert store.claim("worker", "claim") is None
+
+
+@pytest.mark.parametrize(
     "changes",
     [
         {"dag_workers": True},
