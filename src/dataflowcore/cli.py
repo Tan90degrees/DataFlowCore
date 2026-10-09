@@ -43,6 +43,9 @@ def parser():
     worker.add_argument("--stop-grace", type=float, default=5)
     worker.add_argument("--allow-gil", action="store_true", help="development only")
     worker.add_argument("--runtime-version", default=__version__)
+    worker.add_argument("--runner-dag-workers", type=int, default=8)
+    worker.add_argument("--runner-map-workers", type=int, default=8)
+    worker.add_argument("--runner-max-tasks", type=int, default=100)
     for name in ("submit", "get", "cancel", "retry", "events", "list", "workers", "wait", "drain"):
         sub = commands.add_parser(name)
         sub.add_argument("--url", default=os.getenv("DATAFLOW_URL", "http://127.0.0.1:8080"))
@@ -70,6 +73,14 @@ def parser():
     run.add_argument("--data-root", required=True)
     run.add_argument("--parent-pid", type=int, required=True)
     run.add_argument("--allow-gil", action="store_true")
+    runner = commands.add_parser("_runner", help=argparse.SUPPRESS)
+    runner.add_argument("--workspace", required=True)
+    runner.add_argument("--data-root", required=True)
+    runner.add_argument("--parent-pid", type=int, required=True)
+    runner.add_argument("--dag-workers", type=int, required=True)
+    runner.add_argument("--map-workers", type=int, required=True)
+    runner.add_argument("--max-tasks", type=int, required=True)
+    runner.add_argument("--allow-gil", action="store_true")
     return p
 
 
@@ -109,7 +120,22 @@ def main():
             args.stop_grace,
             args.allow_gil,
             runtime_version=args.runtime_version,
+            runner_dag_workers=args.runner_dag_workers,
+            runner_map_workers=args.runner_map_workers,
+            runner_max_tasks=args.runner_max_tasks,
         ).run()
+    elif args.command == "_runner":
+        from .runner import runner_main
+
+        runner_main(
+            args.workspace,
+            args.data_root,
+            args.parent_pid,
+            args.dag_workers,
+            args.map_workers,
+            args.max_tasks,
+            args.allow_gil,
+        )
     elif args.command == "_run":
         from .worker import parent_death_signal
 
@@ -126,7 +152,11 @@ def main():
         health = json.loads((Path(args.work_root) / "health.json").read_text())
         if time.time() - health["updated_at"] > 15:
             raise SystemExit(1)
-        if args.ready and (not health["registered"] or health["draining"]):
+        if args.ready and (
+            not health["registered"]
+            or health["draining"]
+            or health.get("live_runners", 0) < health.get("runner_slots", 1)
+        ):
             raise SystemExit(1)
     else:
         client = Client(args.url, os.getenv("DATAFLOW_ADMIN_TOKEN", ""))

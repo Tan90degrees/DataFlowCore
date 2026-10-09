@@ -18,7 +18,7 @@ const states = {
 };
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
 let api = null,
-  version = "0.2.0",
+  version = "0.3.0",
   epoch = 0,
   refreshing = false,
   connected = false;
@@ -791,6 +791,8 @@ function renderDetail() {
           kv([
             ["尝试 ID", attempt?.id],
             ["执行器会话", attempt?.worker_session],
+            ["运行进程 PID", p.runner?.pid],
+            ["此前完成文件", p.runner?.tasks_before],
             ["状态", attempt ? badge(attempt.state) : "等待分配"],
             ["开始时间", date(attempt?.started_at)],
             ["结束时间", date(attempt?.finished_at)],

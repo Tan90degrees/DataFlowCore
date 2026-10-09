@@ -2,7 +2,7 @@
   "name": "word-count",
   "input_path": "/dataflow/input.txt",
   "pool": "default",
-  "runtime_version": "0.2.0",
+  "runtime_version": "0.3.0",
   "cpu": 1,
   "memory_mb": 256,
   "dag_workers": 2,

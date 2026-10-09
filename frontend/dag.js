@@ -1,4 +1,4 @@
-export function template(version = "0.2.0") {
+export function template(version = "0.3.0") {
   return {
     name: "文本词频统计",
     input_path: "/dataflow/input.txt",

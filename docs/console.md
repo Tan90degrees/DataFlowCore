@@ -53,9 +53,9 @@ CPU/内存是调度声明，实际限制由 Pod 资源控制。日志是最多�
 两个镜像分别构建，推送到自己的镜像仓库，不能假设默认 GHCR 镜像已经发布：
 
 ```bash
-docker build -t registry.example.com/dataflowcore:0.2.0 .
+docker build -t registry.example.com/dataflowcore:0.3.0 .
 docker build -t registry.example.com/dataflowcore-console:0.1.0 frontend
-docker push registry.example.com/dataflowcore:0.2.0
+docker push registry.example.com/dataflowcore:0.3.0
 docker push registry.example.com/dataflowcore-console:0.1.0
 helm upgrade --install dataflowcore charts/dataflowcore \
   --set image.repository=registry.example.com/dataflowcore \
