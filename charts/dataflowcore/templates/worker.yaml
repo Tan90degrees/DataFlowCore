@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-worker
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels: {app: "{{ .Release.Name }}-worker"}
+  template:
+    metadata:
+      labels: {app: "{{ .Release.Name }}-worker"}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      nodeSelector:
+        {{- toYaml .Values.worker.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.worker.tolerations | nindent 8 }}
+      containers:
+        - name: worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - worker
+            - --url
+            - "http://{{ .Release.Name }}-control:8080"
+            - --slots
+            - "{{ .Values.worker.slots }}"
+            - --cpu
+            - "{{ .Values.worker.cpu }}"
+            - --memory-mb
+            - "{{ .Values.worker.memoryMB }}"
+            - --pool
+            - "{{ .Values.worker.pool }}"
+            - --runtime-version
+            - "{{ .Values.worker.runtimeVersion }}"
+            - --interval
+            - "{{ .Values.worker.interval }}"
+            - --stop-grace
+            - "{{ .Values.worker.stopGrace }}"
+          env:
+            - name: DATAFLOW_WORKER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: "{{ .Values.existingSecret }}", key: worker-token}
+          startupProbe:
+            exec: {command: [dataflow, worker-health]}
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            exec: {command: [dataflow, worker-health]}
+            periodSeconds: 10
+            timeoutSeconds: 3
+          readinessProbe:
+            exec: {command: [dataflow, worker-health, --ready]}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /dataflow}
+            - {name: work, mountPath: /work}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: "{{ .Values.existingDataClaim }}"}
+        - name: work
+          emptyDir: {sizeLimit: 2Gi}
+        - name: tmp
+          emptyDir: {sizeLimit: 1Gi}

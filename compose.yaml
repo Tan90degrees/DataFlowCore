@@ -1,0 +1,48 @@
+services:
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_DB: dataflow
+      POSTGRES_USER: dataflow
+      POSTGRES_PASSWORD: ${DATAFLOW_DB_PASSWORD:?Set DATAFLOW_DB_PASSWORD in .env}
+    volumes:
+      - metadata:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U dataflow -d dataflow]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  control:
+    build: .
+    image: dataflowcore:local
+    environment:
+      DATAFLOW_DATABASE_URL: postgresql://dataflow:${DATAFLOW_DB_PASSWORD}@postgres:5432/dataflow
+      DATAFLOW_ADMIN_TOKEN: ${DATAFLOW_ADMIN_TOKEN:?Set DATAFLOW_ADMIN_TOKEN in .env}
+      DATAFLOW_WORKER_TOKEN: ${DATAFLOW_WORKER_TOKEN:?Set DATAFLOW_WORKER_TOKEN in .env}
+    ports:
+      - 127.0.0.1:8080:8080
+    volumes:
+      - ./data:/dataflow:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+  worker:
+    image: dataflowcore:local
+    command: [worker, --url, "http://control:8080", --slots, "2", --cpu, "4", --memory-mb, "2048"]
+    environment:
+      DATAFLOW_WORKER_TOKEN: ${DATAFLOW_WORKER_TOKEN}
+    volumes:
+      - ./data:/dataflow
+    depends_on:
+      control:
+        condition: service_healthy
+    stop_grace_period: 90s
+    restart: unless-stopped
+volumes:
+  metadata:
