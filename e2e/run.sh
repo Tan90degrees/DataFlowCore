@@ -42,7 +42,7 @@ helm upgrade --install dataflowcore charts/dataflowcore \
   --wait --timeout=240s
 kubectl port-forward service/dataflowcore-control 18080:8080 > .e2e/port-forward.log 2>&1 &
 forward_pid=$!
-kubectl port-forward service/dataflowcore-console 18081:8080 > .e2e/console-forward.log 2>&1 &
+kubectl port-forward service/dataflowcore-console 18082:8080 > .e2e/console-forward.log 2>&1 &
 console_forward_pid=$!
 trap 'kill "$forward_pid" "$console_forward_pid" 2>/dev/null || true' EXIT
 export DATAFLOW_ADMIN_TOKEN=e2e-admin-token-00000000000000000
