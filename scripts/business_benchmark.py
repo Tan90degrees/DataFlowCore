@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from dataflowcore import __version__
@@ -130,12 +131,15 @@ def run(
             },
         )
         ids, submit_ms, queries_ms = [], [], []
+        run_id = uuid.uuid4().hex
         started = time.monotonic()
         for i in range(files):
             source = root / f"document-{i}.md"
             source.write_text((f"业务文件 {i} DataFlow document paragraph.\n" * chars)[:chars])
             before = time.monotonic()
-            ids.append(client.submit(flow.spec(source), key=f"document-{i}")["id"])
+            ids.append(
+                client.submit(flow.spec(source), key=f"benchmark:{run_id}:document-{i}")["id"]
+            )
             submit_ms.append((time.monotonic() - before) * 1000)
         final, poll_requests, peak_control_rss = {}, 0, 0
         deadline = started + 180
@@ -192,6 +196,7 @@ def run(
         result = {
             "runtime": require_free_threading(),
             "package_version": __version__,
+            "run_id": run_id,
             "measured_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "platform": platform.platform(),
             "logical_cpus": os.cpu_count(),
@@ -225,7 +230,9 @@ def run(
                 "interval": interval,
                 "characters_per_file": chars,
                 "fixture_http_delay_seconds": delay,
-                "store": "postgres" if dsn else "sqlite",
+                "store": "postgres"
+                if dsn and dsn.startswith(("postgresql://", "postgres://"))
+                else "sqlite",
                 "embedding_workers": embedding_workers,
                 "cpu_rounds": cpu_rounds,
                 "polling": "batch" if hasattr(client, "statuses") else "individual",

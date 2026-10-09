@@ -44,6 +44,7 @@ jobs:
         with:
           name: business-performance
           path: .e2e/business-*.json
+          include-hidden-files: true
       - run: python -m build
       - uses: azure/setup-helm@v4.3.0
         with:
@@ -83,3 +84,4 @@ jobs:
         with:
           name: e2e-evidence
           path: .e2e/evidence.json
+          include-hidden-files: true
