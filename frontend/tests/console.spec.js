@@ -186,9 +186,33 @@ test("lost submit response is idempotent; cancellation, retry, failures and work
   await page.getByRole("button", { name: "停止任务" }).click();
   await page.locator("#confirm-yes").click();
   await expect(page.locator(".title-meta .badge")).toHaveText("已取消");
+  // A confirmed submission followed by an intentional new submission creates new work.
+  await page.getByRole("link", { name: "DAG 编排", exact: true }).click();
+  const intentional = await submit(page);
+  expect(intentional).not.toBe(id);
+  await page.getByRole("button", { name: "停止任务" }).click();
+  await page.locator("#confirm-yes").click();
+  await expect(page.locator(".title-meta .badge")).toHaveText("已取消");
+  await page.evaluate((id) => {
+    location.hash = `task/${id}`;
+  }, id);
+  await expect(page.locator(".title-meta .badge")).toHaveText("已取消");
   await page.getByRole("button", { name: "从头重试" }).click();
   await page.locator("#confirm-yes").click();
   await expect(page).not.toHaveURL(new RegExp(id));
+  const firstRetry = page.url().split("#task/")[1];
+  await page.getByRole("button", { name: "停止任务" }).click();
+  await page.locator("#confirm-yes").click();
+  await expect(page.locator(".title-meta .badge")).toHaveText("已取消");
+  // Separate successful retry requests for the original task must also create new identities.
+  await page.evaluate((id) => {
+    location.hash = `task/${id}`;
+  }, id);
+  await expect(page.locator(".title-meta .badge")).toHaveText("已取消");
+  await page.getByRole("button", { name: "从头重试" }).click();
+  await page.locator("#confirm-yes").click();
+  await expect(page).not.toHaveURL(new RegExp(id));
+  expect(page.url().split("#task/")[1]).not.toBe(firstRetry);
   await page.getByRole("button", { name: "停止任务" }).click();
   await page.locator("#confirm-yes").click();
   await expect(page.locator(".title-meta .badge")).toHaveText("已取消");

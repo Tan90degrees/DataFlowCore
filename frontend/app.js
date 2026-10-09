@@ -41,6 +41,7 @@ let draft = template(),
   validation = "",
   submitIdentity = null;
 const retryKeys = new Map();
+let submitting = false;
 
 // All business data is rendered with textContent; no HTML interpolation.
 function h(tag, attrs = {}, ...children) {
@@ -581,6 +582,7 @@ async function retryTask() {
     {},
     retryKeys.get(id),
   );
+  retryKeys.delete(id);
   notify("已创建重试任务", true);
   location.hash = `task/${result.id}`;
 }
@@ -979,14 +981,25 @@ async function importDraft(file) {
   render();
 }
 async function submitDraft() {
-  const spec = await validateDraft(),
-    payload = JSON.stringify(spec);
-  if (submitIdentity?.payload !== payload)
-    submitIdentity = { payload, key: crypto.randomUUID() };
-  const result = await needAPI().post("/v1/tasks", spec, submitIdentity.key);
-  notify("任务已提交，等待执行器调度", true);
-  location.hash = `task/${result.id}`;
+  if (submitting) return;
+  submitting = true;
+  try {
+    const spec = await validateDraft(),
+      payload = JSON.stringify(spec);
+    if (submitIdentity?.payload !== payload)
+      submitIdentity = { payload, key: crypto.randomUUID() };
+    const result = await needAPI().post("/v1/tasks", spec, submitIdentity.key);
+    // An acknowledged operation is complete; a later explicit submission is new work.
+    submitIdentity = null;
+    notify("任务已提交，等待执行器调度", true);
+    location.hash = `task/${result.id}`;
+  } finally {
+    submitting = false;
+    const submitButton = $("#submit-dag");
+    if (submitButton) submitButton.disabled = false;
+  }
 }
+
 function renderDAG() {
   const selectedStep =
     draft.steps.find((s) => s.id === selected) || draft.steps[0];
@@ -1206,6 +1219,8 @@ function renderDAG() {
     validation = "";
     $("#validation")?.remove();
   });
+  const submitButton = button("提交任务", submitDraft, "primary", submitting);
+  submitButton.id = "submit-dag";
   return [
     heading(
       "DAG 编排",
@@ -1222,7 +1237,7 @@ function renderDAG() {
           download(draft, "task-spec.json");
         }),
         button("校验 DAG", validateDraft),
-        button("提交任务", submitDraft, "primary"),
+        submitButton,
       ),
     ),
     importInput,
