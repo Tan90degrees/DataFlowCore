@@ -44,3 +44,11 @@ Progress.fraction按DAG步骤等权计算，运行中有total的步骤计入其�
 管控可见延迟仍取决于worker.interval。终态包含FAILED/CANCELLED/SKIPPED。
 成功Result.usage包含cpu_seconds和peak_rss_bytes，仅统计该文件子进程。
 极大DAG进度压缩为步骤状态，诊断日志按JSON预算裁剪，避免进度导致续租失败。
+
+## 浏览器管控 API
+
+- `GET /v1/overview`：管理鉴权；返回 `{task_counts: {STATE: count}, version}`，计数包括所有任务。
+- `POST /v1/dags/validate`：管理鉴权，JSON body 与提交任务相同；返回 `{valid: true, spec: 规范化配置, layers: [[step_id, ...], ...]}`。无幂等键、无持久化，不检查文件存在性或导入算子代码。无效图/字段返回 400。
+- `OPTIONS /v1/*`：仅配置的确切 CORS 来源可以预检 GET/POST 与 Authorization/Content-Type/Idempotency-Key；worker 专用接口拒绝预检。实际请求仍要求管理令牌。
+
+管控节点使用 `DATAFLOW_CORS_ORIGINS` 或 `--cors-origins` 配置逗号分隔的确切 HTTP(S) 来源，默认空。浏览器来源不允许时返回 403，来源允许但令牌错误时返回 401。响应包含 `Vary: Origin`，不使用跨域 cookie。独立前端见 [console.md](console.md)。

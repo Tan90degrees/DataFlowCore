@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>DataFlowCore · 管控台</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="config.js"></script>
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <aside class="sidebar">
+      <a class="brand" href="#tasks"
+        ><span class="brand-mark">D</span
+        ><span>DataFlow<span class="brand-core">Core</span></span></a
+      >
+      <div class="workspace-label">任务管控台 <span>CONSOLE</span></div>
+      <nav aria-label="主导航">
+        <a href="#tasks" data-nav="tasks"
+          ><span aria-hidden="true">▤</span>任务中心</a
+        >
+        <a href="#dag" data-nav="dag"
+          ><span aria-hidden="true">◇</span>DAG 编排</a
+        >
+        <a href="#workers" data-nav="workers"
+          ><span aria-hidden="true">▦</span>执行器</a
+        >
+      </nav>
+      <div class="sidebar-note">
+        <span class="live-dot"></span>一个文件，一个任务<br /><small
+          >完整 DAG 在同一执行器运行</small
+        >
+      </div>
+      <button id="connection" class="connection-button">
+        <span id="connection-dot" class="live-dot offline"></span
+        ><span id="connection-label">配置 API 连接</span><span>↗</span>
+      </button>
+    </aside>
+    <div class="shell">
+      <header class="topbar">
+        <span
+          >Workspace <span class="slash">/</span>
+          <strong id="breadcrumb">任务中心</strong></span
+        >
+        <div>
+          <span id="refresh-status" class="muted">尚未连接</span
+          ><button id="refresh" class="icon-button" aria-label="刷新">↻</button>
+        </div>
+      </header>
+      <div id="notice" role="status" aria-live="polite" hidden></div>
+      <main id="main"></main>
+    </div>
+    <dialog id="connect-dialog">
+      <form id="connect-form">
+        <div class="eyebrow">API CONNECTION</div>
+        <h2>连接管控节点</h2>
+        <p class="muted">前端通过独立 HTTP API 访问任务与执行器。</p>
+        <label
+          >API 地址<input
+            id="api-url"
+            required
+            placeholder="http://127.0.0.1:8080 或 /api"
+            autocomplete="url"
+        /></label>
+        <label
+          >管理令牌<input
+            id="api-token"
+            type="password"
+            required
+            autocomplete="off"
+            placeholder="Admin Bearer token"
+        /></label>
+        <p class="hint">
+          令牌仅保存在当前页面内存，刷新后需重新输入。跨域连接需在管控节点配置允许的前端来源。
+        </p>
+        <p id="connect-error" class="error-text" role="alert"></p>
+        <div class="actions">
+          <button type="button" id="disconnect" class="danger ghost">
+            断开连接</button
+          ><button type="button" id="close-connect" class="ghost">关闭</button
+          ><button type="submit" class="primary">连接</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="confirm-dialog">
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-text"></p>
+      <div class="actions">
+        <button id="confirm-no" class="ghost">取消</button
+        ><button id="confirm-yes" class="danger">确认</button>
+      </div>
+    </dialog>
+  </body>
+</html>

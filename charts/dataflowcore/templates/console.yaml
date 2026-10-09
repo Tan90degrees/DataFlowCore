@@ -1,0 +1,45 @@
+{{- if .Values.console.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-console
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: "{{ .Release.Name }}-console"}
+  template:
+    metadata:
+      labels: {app: "{{ .Release.Name }}-console"}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+      containers:
+        - name: console
+          image: "{{ .Values.console.image.repository }}:{{ .Values.console.image.tag }}"
+          imagePullPolicy: {{ .Values.console.image.pullPolicy }}
+          ports: [{name: http, containerPort: 8080}]
+          env:
+            - name: DATAFLOW_API_UPSTREAM
+              value: "http://{{ .Release.Name }}-control:8080"
+          readinessProbe:
+            httpGet: {path: /index.html, port: http}
+          livenessProbe:
+            httpGet: {path: /index.html, port: http}
+          resources:
+            {{- toYaml .Values.console.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-console
+spec:
+  selector: {app: "{{ .Release.Name }}-console"}
+  ports: [{name: http, port: 8080, targetPort: http}]
+{{- end }}

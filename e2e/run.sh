@@ -25,7 +25,7 @@ nodes:
         containerPath: /dataflow-shared
 EOF
 kind create cluster --name dataflowcore --config .e2e/kind.yaml --wait 120s
-kind load docker-image dataflowcore:e2e --name dataflowcore
+kind load docker-image dataflowcore:e2e dataflowcore-console:e2e --name dataflowcore
 kubectl apply -f e2e/infrastructure.yaml
 kubectl rollout status deployment/postgres --timeout=180s
 kubectl rollout status deployment/embedding-fixture --timeout=180s
@@ -36,11 +36,16 @@ kubectl create secret generic dataflowcore-secrets \
   --from-literal=worker-token=e2e-worker-token-0000000000000000
 helm upgrade --install dataflowcore charts/dataflowcore \
   --set image.repository=dataflowcore --set image.tag=e2e \
+  --set console.enabled=true --set console.image.repository=dataflowcore-console --set console.image.tag=e2e \
   --set leaseSeconds=10 --set worker.interval=1 --set worker.stopGrace=1 \
   --set worker.resources.requests.cpu=200m --set worker.resources.requests.memory=256Mi \
   --wait --timeout=240s
 kubectl port-forward service/dataflowcore-control 18080:8080 > .e2e/port-forward.log 2>&1 &
 forward_pid=$!
-trap 'kill "$forward_pid" 2>/dev/null || true' EXIT
+kubectl port-forward service/dataflowcore-console 18082:8080 > .e2e/console-forward.log 2>&1 &
+console_forward_pid=$!
+trap 'kill "$forward_pid" "$console_forward_pid" 2>/dev/null || true' EXIT
 export DATAFLOW_ADMIN_TOKEN=e2e-admin-token-00000000000000000
 PYTHONPATH=src python e2e/verify.py
+
+PYTHONPATH=src python e2e/verify_console.py

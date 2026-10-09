@@ -1,0 +1,14 @@
+{
+  "name": "dataflowcore-console",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "python3 -m http.server 8000 --bind 127.0.0.1",
+    "test": "playwright test",
+    "check": "node --check app.js && node --check api.js && node --check dag.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.58.2"
+  }
+}

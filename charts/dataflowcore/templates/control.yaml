@@ -26,6 +26,8 @@ spec:
           args: [control, --host, "0.0.0.0", --data-root, /dataflow, --lease, "{{ .Values.leaseSeconds }}"]
           ports: [{name: http, containerPort: 8080}]
           env:
+            - name: DATAFLOW_CORS_ORIGINS
+              value: {{ join "," .Values.corsOrigins | quote }}
             - name: DATAFLOW_DATABASE_URL
               valueFrom:
                 secretKeyRef: {name: "{{ .Values.existingSecret }}", key: database-url}

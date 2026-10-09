@@ -25,3 +25,16 @@ control:
   resources:
     requests: {cpu: "250m", memory: "256Mi"}
     limits: {cpu: "1", memory: "512Mi"}
+
+# Optional independently built static console + same-origin API reverse proxy.
+console:
+  enabled: false
+  image:
+    repository: ghcr.io/tan90degrees/dataflowcore-console
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  resources:
+    requests: {cpu: "50m", memory: "32Mi"}
+    limits: {cpu: "250m", memory: "128Mi"}
+# Only needed for a browser calling the control API directly across origins.
+corsOrigins: []
