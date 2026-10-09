@@ -1,0 +1,57 @@
+# Disposable CI infrastructure only; production uses an external durable PostgreSQL.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: postgres}
+  template:
+    metadata:
+      labels: {app: postgres}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-bookworm
+          env:
+            - {name: POSTGRES_USER, value: dataflow}
+            - {name: POSTGRES_PASSWORD, value: dataflow-test}
+            - {name: POSTGRES_DB, value: dataflow}
+          readinessProbe:
+            exec: {command: [pg_isready, -U, dataflow, -d, dataflow]}
+            periodSeconds: 2
+          volumeMounts:
+            - {name: metadata, mountPath: /var/lib/postgresql/data}
+      volumes:
+        - name: metadata
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector: {app: postgres}
+  ports: [{port: 5432, targetPort: 5432}]
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: dataflowcore-data
+spec:
+  capacity: {storage: 1Gi}
+  accessModes: [ReadWriteMany]
+  storageClassName: ""
+  hostPath: {path: /dataflow-shared, type: Directory}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dataflowcore-data
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: ""
+  volumeName: dataflowcore-data
+  resources:
+    requests: {storage: 1Gi}

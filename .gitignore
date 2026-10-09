@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# DataFlowCore local runtime and acceptance data
+/data/
+/.e2e/
+/.dataflow-worker/
+/.env
+/*.db
+/dist/

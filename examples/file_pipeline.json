@@ -1,0 +1,17 @@
+{
+  "name": "word-count",
+  "input_path": "/dataflow/input.txt",
+  "pool": "default",
+  "runtime_version": "0.1.0",
+  "cpu": 1,
+  "memory_mb": 256,
+  "dag_workers": 2,
+  "max_attempts": 3,
+  "retry_delay": 2,
+  "timeout": 300,
+  "steps": [
+    {"id": "read", "callable": "dataflowcore.operators:read_text"},
+    {"id": "count", "callable": "dataflowcore.operators:word_count", "depends_on": ["read"]},
+    {"id": "write", "callable": "dataflowcore.operators:write_json", "depends_on": ["count"]}
+  ]
+}

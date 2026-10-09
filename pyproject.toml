@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77,<83"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dataflowcore"
+version = "0.1.0"
+description = "Durable file-level DAG orchestration with free-threaded Python executors"
+requires-python = ">=3.14"
+license = "Apache-2.0"
+dependencies = []
+
+[project.optional-dependencies]
+postgres = ["psycopg>=3.3,<4"]
+dev = ["pytest>=9,<10", "ruff>=0.15,<0.17", "build>=1,<2"]
+
+[project.scripts]
+dataflow = "dataflowcore.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

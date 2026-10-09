@@ -1,0 +1,76 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_USER: dataflow
+          POSTGRES_PASSWORD: dataflow-test
+          POSTGRES_DB: dataflow
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U dataflow -d dataflow"
+          --health-interval 2s --health-timeout 2s --health-retries 30
+    env:
+      DATAFLOW_TEST_DATABASE_URL: postgresql://dataflow:dataflow-test@localhost:5432/dataflow
+      PSYCOPG_IMPL: python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14t'
+      - run: sudo apt-get update && sudo apt-get install -y libpq5
+      - run: python -m pip install -e '.[postgres,dev]'
+      - run: ruff check . && ruff format --check .
+      - run: dataflow doctor
+      - run: python -c 'import psycopg; import sys; assert not sys._is_gil_enabled()'
+      - run: pytest -q
+      - run: python -m build
+      - uses: azure/setup-helm@v4.3.0
+        with:
+          version: v3.17.3
+      - run: helm lint charts/dataflowcore && helm template demo charts/dataflowcore > /tmp/rendered.yaml
+      - run: helm package charts/dataflowcore --destination dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: dist/*
+  kubernetes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14t'
+      - run: docker build -t dataflowcore:e2e .
+      - uses: helm/kind-action@v1.12.0
+        with:
+          install_only: true
+          version: v0.27.0
+      - uses: azure/setup-helm@v4.3.0
+        with:
+          version: v3.17.3
+      - run: bash e2e/run.sh
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl get events -A --sort-by=.lastTimestamp || true
+          kubectl logs deployment/dataflowcore-control --all-containers --tail=200 || true
+          kubectl logs -l app=dataflowcore-worker --all-containers --tail=200 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-evidence
+          path: .e2e/evidence.json

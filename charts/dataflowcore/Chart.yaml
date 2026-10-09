@@ -1,0 +1,6 @@
+apiVersion: v2
+name: dataflowcore
+description: File-level DAG orchestration with free-threaded Python
+type: application
+version: 0.1.0
+appVersion: 0.1.0
