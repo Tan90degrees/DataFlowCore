@@ -125,12 +125,32 @@ test("auth, cursor pagination, filters, DAG edits, cycle rejection and business 
   await expect(page.getByLabel("任务名称")).toHaveValue(
     "文档入库 / 六节点业务",
   );
+  await page.locator("#task-parameters").evaluate((node) => {
+    node.closest("details").open = true;
+  });
+  await page
+    .locator("#task-parameters")
+    .fill('{"receipt_delay":1,"chunk_size":128,"overlap":16}');
+  await page
+    .getByRole("button", { name: "编辑节点 chunk", exact: true })
+    .click();
+  await page.locator("#node-parameters").fill('{"chunk_size":256}');
+  // Submission applies the current node configuration without requiring an extra Apply click.
   const business = await submit(page);
   await expect(page.locator(".title-meta .badge")).toHaveText("已完成");
   const final = await (
     await request.get(`${base}/v1/tasks/${business}`, { headers })
   ).json();
-  expect(final.result.steps.index.chunks).toBeGreaterThan(0);
+  expect(final.spec.parameters.chunk_size).toBe(128);
+  expect(
+    final.spec.steps.find((step) => step.id === "chunk").parameters.chunk_size,
+  ).toBe(256);
+  const expectedChunks =
+    1 +
+    Math.ceil(
+      Math.max(0, final.result.steps.parse.characters - 256) / (256 - 16),
+    );
+  expect(final.result.steps.index.chunks).toBe(expectedChunks);
   expect(final.attempt_count).toBe(1);
   await page.screenshot({
     path: "test-results/business-detail.png",

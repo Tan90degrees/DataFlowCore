@@ -52,3 +52,5 @@ Progress.fraction按DAG步骤等权计算，运行中有total的步骤计入其�
 - `OPTIONS /v1/*`：仅配置的确切 CORS 来源可以预检 GET/POST 与 Authorization/Content-Type/Idempotency-Key；worker 专用接口拒绝预检。实际请求仍要求管理令牌。
 
 管控节点使用 `DATAFLOW_CORS_ORIGINS` 或 `--cors-origins` 配置逗号分隔的确切 HTTP(S) 来源，默认空。浏览器来源不允许时返回 403，来源允许但令牌错误时返回 401。响应包含 `Vary: Origin`，不使用跨域 cookie。独立前端见 [console.md](console.md)。
+
+任务配置支持顶层 `parameters`（公共配置）和 `steps[].parameters`（节点配置），均须为 JSON 对象。节点同名键覆盖公共配置，嵌套对象整体替换；算子从 `context.parameters` 读取，依赖产物仍从 `inputs` 读取。配置持久化并随重试保留，完整示例见 [operator-parameters.md](operator-parameters.md)。

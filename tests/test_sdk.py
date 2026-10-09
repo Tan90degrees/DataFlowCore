@@ -27,3 +27,11 @@ def test_sdk_rejects_local_and_instance_callables():
 
     with pytest.raises(Invalid):
         Pipeline("bad").step("bad", Instance())
+
+
+@pytest.mark.parametrize("parameters", [[], ""])
+def test_sdk_does_not_silently_replace_invalid_empty_parameter_values(tmp_path, parameters):
+    with pytest.raises(Invalid, match="step parameters must be an object"):
+        Pipeline("invalid").step("read", read_text, parameters=parameters).spec(
+            tmp_path / "input.txt"
+        )

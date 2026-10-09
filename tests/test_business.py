@@ -248,3 +248,28 @@ def test_sdk_wait_unknown_task_and_deadline(cluster):
     queued = submit_file(cluster)
     with pytest.raises(TimeoutError):
         cluster.client.wait_many([queued["id"]], timeout=0.1, interval=0.01)
+
+
+def test_node_configuration_overrides_propagate_to_immutable_index_identity(cluster):
+    cluster.worker()
+    steps = pipeline().steps
+    next(step for step in steps if step["id"] == "chunk")["parameters"] = {"chunk_size": 16}
+    next(step for step in steps if step["id"] == "embed")["parameters"] = {
+        "embedding_profile": "node-profile",
+    }
+    parameters = {"chunk_size": 64, "overlap": 0, "embedding_profile": "task-profile"}
+    first = cluster.submit(steps=steps, parameters=parameters)
+    first = cluster.state(first["id"], "SUCCEEDED")
+    embedded = first["result"]["steps"]["embed"]
+    assert embedded["chunk_size"] == 16
+    assert embedded["embedding_profile"] == "node-profile"
+    next(step for step in steps if step["id"] == "chunk")["parameters"] = {"chunk_size": 32}
+    second = cluster.submit(steps=steps, parameters=parameters)
+    second = cluster.state(second["id"], "SUCCEEDED")
+    assert first["spec"]["parameters"] == second["spec"]["parameters"]
+    assert (
+        first["result"]["steps"]["index"]["version"]
+        != (second["result"]["steps"]["index"]["version"])
+    )
+    assert first["result"]["steps"]["index"]["chunks"] == 2
+    assert second["result"]["steps"]["index"]["chunks"] == 1

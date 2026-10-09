@@ -1,6 +1,7 @@
 """A bounded local DAG engine, running entirely inside one task process."""
 
 import asyncio
+import copy
 import hashlib
 import importlib
 import inspect
@@ -224,7 +225,7 @@ def run_dag(assignment, workspace, data_root, allow_gil=False):
             sid,
             source,
             output,
-            {**spec.parameters, **step.get("parameters", {})},
+            copy.deepcopy({**spec.parameters, **step.get("parameters", {})}),
             cancelled,
             progress,
         )

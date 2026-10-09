@@ -336,3 +336,76 @@ def test_control_outage_beyond_lease_forces_full_retry(cluster):
     cluster.control = cluster.start_control()
     final = cluster.state(task["id"], "SUCCEEDED")
     assert [a["state"] for a in final["attempts"]] == ["LOST", "SUCCEEDED"]
+
+
+def test_submission_configuration_and_upstream_inputs_are_independent(cluster):
+    cluster.worker()
+    task = cluster.submit(
+        parameters={"encoding": "utf-8", "label": "task", "nested": {"flags": ["global"]}},
+        steps=[
+            {"id": "read", "callable": "dataflowcore.operators:read_text"},
+            {
+                "id": "count",
+                "callable": "dataflowcore.operators:word_count",
+                "depends_on": ["read"],
+            },
+            {
+                "id": "observe",
+                "callable": "tests.parameter_operators:snapshot",
+                "depends_on": ["read", "count"],
+                "parameters": {"label": "node", "nested": {"flags": ["local"]}},
+            },
+        ],
+    )
+    final = cluster.state(task["id"], "SUCCEEDED")
+    observed = final["result"]["steps"]["observe"]
+    assert observed["parameters"] == {
+        "encoding": "utf-8",
+        "label": "node",
+        "nested": {"flags": ["local"]},
+    }
+    assert observed["inputs"]["read"]["text"] == "hello world hello"
+    assert observed["inputs"]["count"]["words"] == 3
+    assert final["spec"]["parameters"]["label"] == "task"
+    assert final["spec"]["steps"][-1]["parameters"]["label"] == "node"
+
+
+def test_nested_configuration_isolated_and_manual_retry_preserves_spec(cluster):
+    cluster.worker()
+    task = cluster.submit(
+        parameters={"nested": {"flags": ["base"]}},
+        steps=[
+            {
+                "id": "mutate",
+                "callable": "tests.parameter_operators:snapshot",
+                "parameters": {"mutate": True},
+            },
+            {
+                "id": "observe",
+                "callable": "tests.parameter_operators:snapshot",
+                "depends_on": ["mutate"],
+            },
+        ],
+    )
+    final = cluster.state(task["id"], "SUCCEEDED")
+    assert final["result"]["steps"]["mutate"]["parameters"]["nested"]["flags"] == [
+        "base",
+        "changed",
+    ]
+    assert final["result"]["steps"]["observe"]["parameters"]["nested"]["flags"] == ["base"]
+    assert final["spec"]["parameters"]["nested"]["flags"] == ["base"]
+    pending = cluster.submit(
+        pool="unavailable",
+        parameters={"nested": {"flags": ["retry"]}},
+        steps=[
+            {
+                "id": "observe",
+                "callable": "tests.parameter_operators:snapshot",
+                "parameters": {"label": "retry-node"},
+            }
+        ],
+    )
+    old = cluster.client.cancel(pending["id"])
+    retried = cluster.client.retry(pending["id"])
+    assert old["spec"] == retried["spec"]
+    assert old["id"] != retried["id"]

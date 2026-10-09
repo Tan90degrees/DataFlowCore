@@ -1,0 +1,40 @@
+{
+  "name": "configured-document-ingestion",
+  "input_path": "/dataflow/input.txt",
+  "parameters": {
+    "chunk_size": 1024,
+    "overlap": 32,
+    "embedding_workers": 4,
+    "embedding_profile": "fixture-sha256-v1"
+  },
+  "steps": [
+    { "id": "parse", "callable": "dataflowcore.examples.ingestion:parse" },
+    {
+      "id": "chunk",
+      "callable": "dataflowcore.examples.ingestion:chunk",
+      "depends_on": ["parse"],
+      "parameters": { "chunk_size": 256 }
+    },
+    {
+      "id": "stats",
+      "callable": "dataflowcore.examples.ingestion:statistics",
+      "depends_on": ["parse"]
+    },
+    {
+      "id": "embed",
+      "callable": "dataflowcore.examples.ingestion:embed",
+      "depends_on": ["chunk"],
+      "parameters": { "embedding_workers": 8 }
+    },
+    {
+      "id": "index",
+      "callable": "dataflowcore.examples.ingestion:index",
+      "depends_on": ["embed", "stats"]
+    },
+    {
+      "id": "receipt",
+      "callable": "dataflowcore.examples.ingestion:receipt",
+      "depends_on": ["index"]
+    }
+  ]
+}
