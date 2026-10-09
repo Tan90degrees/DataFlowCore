@@ -1,6 +1,6 @@
 image:
   repository: ghcr.io/tan90degrees/dataflowcore
-  tag: "0.2.0"
+  tag: "0.3.0"
   pullPolicy: IfNotPresent
 # Existing Secret keys: database-url, admin-token, worker-token.
 existingSecret: dataflowcore-secrets
@@ -10,12 +10,15 @@ leaseSeconds: 30
 worker:
   replicas: 2
   pool: default
-  runtimeVersion: "0.2.0"
+  runtimeVersion: "0.3.0"
   slots: 1
   cpu: 2
   memoryMB: 1024
   interval: 2
   stopGrace: 5
+  runnerDagWorkers: 2
+  runnerMapWorkers: 4
+  runnerMaxTasks: 100
   resources:
     requests: {cpu: "2", memory: "1536Mi"}
     limits: {cpu: "2", memory: "1536Mi"}

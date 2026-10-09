@@ -67,7 +67,7 @@ class Cluster:
         until(lambda: self.client.request("GET", "/readyz"))
         return process
 
-    def worker(self, slots=1):
+    def worker(self, slots=1, *extra):
         return self.launch(
             "worker",
             "--url",
@@ -82,6 +82,7 @@ class Cluster:
             "0.2",
             "--slots",
             str(slots),
+            *extra,
         )
 
     def submit(self, seconds=0, steps=None, **changes):
@@ -259,21 +260,11 @@ def test_supervisor_kill_terminates_task_child(cluster):
     cluster.state(task["id"], "RUNNING")
     assignment_file = until(lambda: next(cluster.root.glob("worker-*/*/*/assignment.json"), None))
     workspace = assignment_file.parent
-    # /proc identifies the actual isolated task process on Linux.
+    # The attempt records the assigned resident slot process on Linux.
     if sys.platform != "linux":
         pytest.skip("Linux parent-death signal")
 
-    def child_pid():
-        for proc in Path("/proc").iterdir():
-            if proc.name.isdigit():
-                try:
-                    cmd = (proc / "cmdline").read_bytes()
-                    if b"_run" in cmd and str(workspace).encode() in cmd:
-                        return int(proc.name)
-                except OSError:
-                    pass
-
-    pid = until(child_pid)
+    pid = json.loads((workspace / "runner.json").read_text())["pid"]
     worker.send_signal(signal.SIGKILL)
     worker.wait(timeout=3)
 

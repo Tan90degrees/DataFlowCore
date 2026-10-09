@@ -19,6 +19,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 from .contracts import Invalid, TaskSpec, canonical, integer
+from .runner_runtime import RunnerRuntime
 
 
 class PermanentError(Exception):
@@ -63,13 +64,14 @@ def atomic_json(path, value):
 
 
 class Progress:
-    def __init__(self, path, steps, flush_interval=0.1):
+    def __init__(self, path, steps, flush_interval=0.1, runner=None):
         self.path = path
         self.lock = threading.Lock()
         self.steps = {s["id"]: {"state": "PENDING"} for s in steps}
         self.flush_interval, self.last_flush = flush_interval, 0.0
         self.started = time.monotonic()
         self.state, self.closed = "RUNNING", False
+        self.runner = runner
         self.update()
 
     def update(self, sid=None, **values):
@@ -108,6 +110,8 @@ class Progress:
             "updated_at": time.time(),
             "elapsed_seconds": time.monotonic() - self.started,
         }
+        if self.runner:
+            snapshot["runner"] = self.runner
         if len(canonical(snapshot)) > 200_000:
             for step in self.steps.values():
                 step.pop("message", None)
@@ -141,6 +145,8 @@ class Context:
     parameters: dict
     cancelled: threading.Event
     _progress: Progress
+    _runtime: object = None
+    _operator: str = ""
 
     def check_cancelled(self):
         if self.cancelled.is_set():
@@ -155,6 +161,17 @@ class Context:
         self._progress.update(
             self.step_id, completed=completed, total=total, message=str(message)[:2000]
         )
+
+    def resource(self, key, factory):
+        """Reuse an explicitly task-independent resource in this runner process.
+
+        Keys are scoped to the operator reference. Include configuration/model identity
+        in the key when it changes the resource. Factories must not capture task state.
+        """
+        self.check_cancelled()
+        if self._runtime is None:
+            raise Invalid("context.resource requires a managed runner runtime")
+        return self._runtime.resource(self._operator, key, factory)
 
     def map(self, fn, items, *, max_workers=4, max_pending=None):
         """Ordered streaming page/chunk parallelism, with bounded producer prefetch.
@@ -171,6 +188,10 @@ class Context:
             result = fn(item)
             self.check_cancelled()
             return result
+
+        if self._runtime is not None:
+            yield from self._runtime.map(invoke, items, max_workers, pending)
+            return
 
         pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=self.step_id)
         failed = False
@@ -196,7 +217,12 @@ def resolve_symbol(reference):
     return fn() if inspect.isclass(fn) else fn
 
 
-def run_dag(assignment, workspace, data_root, allow_gil=False):
+def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
+    import resource
+
+    before = resource.getrusage(resource.RUSAGE_SELF)
+    owned = runtime is None
+    runtime = runtime or RunnerRuntime()
     spec = TaskSpec.parse(assignment["spec"])
     cancelled = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: cancelled.set())
@@ -213,9 +239,18 @@ def run_dag(assignment, workspace, data_root, allow_gil=False):
     output.mkdir(parents=True, exist_ok=False)
     functions = {s["id"]: resolve_symbol(s["callable"]) for s in spec.steps}
     runtime_info = require_free_threading(allow_gil)
-    progress = Progress(Path(workspace) / "progress.json", spec.steps)
+    runtime_info["runner"] = {
+        "pid": os.getpid(),
+        "tasks_before": runtime.completed_tasks,
+        "dag_workers": runtime.dag_workers,
+        "map_workers": runtime.map_workers,
+    }
+    progress = Progress(
+        Path(workspace) / "progress.json", spec.steps, runner=runtime_info["runner"]
+    )
     results, running, submitted = {}, {}, set()
-    pool = ThreadPoolExecutor(max_workers=spec.dag_workers, thread_name_prefix="dag")
+    pool = runtime.dag
+    dag_workers = min(spec.dag_workers, runtime.dag_workers)
 
     def execute(step, inputs):
         sid = step["id"]
@@ -228,6 +263,8 @@ def run_dag(assignment, workspace, data_root, allow_gil=False):
             copy.deepcopy({**spec.parameters, **step.get("parameters", {})}),
             cancelled,
             progress,
+            runtime,
+            step["callable"],
         )
         context.check_cancelled()
         progress.update(sid, state="RUNNING")
@@ -236,6 +273,7 @@ def run_dag(assignment, workspace, data_root, allow_gil=False):
             value = functions[sid](context, MappingProxyType(inputs))
             if inspect.isawaitable(value):
                 value = asyncio.run(value)
+            require_free_threading(allow_gil)
             context.check_cancelled()
             encoded = canonical(value)
             if len(encoded) > 262144:
@@ -257,7 +295,7 @@ def run_dag(assignment, workspace, data_root, allow_gil=False):
                 if (
                     step["id"] not in submitted
                     and set(deps) <= results.keys()
-                    and len(running) < spec.dag_workers
+                    and len(running) < dag_workers
                 ):
                     future = pool.submit(execute, step, {d: results[d] for d in deps})
                     running[future] = step["id"]
@@ -265,6 +303,8 @@ def run_dag(assignment, workspace, data_root, allow_gil=False):
             done, _ = wait(running, timeout=0.1, return_when=FIRST_COMPLETED)
             for future in done:
                 results[running.pop(future)] = future.result()
+        if not runtime.idle():
+            raise PermanentError("operator left unfinished context.map work")
         if file_hash(source) != actual_hash:
             raise PermanentError("input file changed during execution")
         manifest = []
@@ -280,8 +320,6 @@ def run_dag(assignment, workspace, data_root, allow_gil=False):
                     }
                 )
         progress.finish("SUCCEEDED")
-        import resource
-
         usage = resource.getrusage(resource.RUSAGE_SELF)
         return {
             "steps": results,
@@ -290,8 +328,9 @@ def run_dag(assignment, workspace, data_root, allow_gil=False):
             "input_sha256": actual_hash,
             "runtime": runtime_info,
             "usage": {
-                "cpu_seconds": usage.ru_utime + usage.ru_stime,
+                "cpu_seconds": usage.ru_utime + usage.ru_stime - before.ru_utime - before.ru_stime,
                 "peak_rss_bytes": usage.ru_maxrss * (1 if sys.platform == "darwin" else 1024),
+                "rss_scope": "runner_lifetime",
             },
         }
     except BaseException as exc:
@@ -299,13 +338,14 @@ def run_dag(assignment, workspace, data_root, allow_gil=False):
         raise
     finally:
         cancelled.set()
-        pool.shutdown(wait=False, cancel_futures=True)
+        if owned:
+            runtime.close()
 
 
-def child_main(assignment_path, workspace, data_root, allow_gil=False):
+def child_main(assignment_path, workspace, data_root, allow_gil=False, runtime=None):
     assignment = json.loads(Path(assignment_path).read_text())
     try:
-        result = run_dag(assignment, workspace, data_root, allow_gil)
+        result = run_dag(assignment, workspace, data_root, allow_gil, runtime)
         payload = {"state": "SUCCEEDED", "result": result, "error": None, "retryable": False}
         if len(canonical(payload)) > 900_000:
             raise PermanentError("combined result too large; return fewer file references")
@@ -321,6 +361,7 @@ def child_main(assignment_path, workspace, data_root, allow_gil=False):
             ),
         }
     atomic_json(Path(workspace) / "result.json", payload)
+    return payload
 
 
 def sleep_cooperatively(context, seconds):

@@ -49,6 +49,12 @@ spec:
             - "{{ .Values.worker.interval }}"
             - --stop-grace
             - "{{ .Values.worker.stopGrace }}"
+            - --runner-dag-workers
+            - "{{ .Values.worker.runnerDagWorkers }}"
+            - --runner-map-workers
+            - "{{ .Values.worker.runnerMapWorkers }}"
+            - --runner-max-tasks
+            - "{{ .Values.worker.runnerMaxTasks }}"
           env:
             - name: DATAFLOW_WORKER_TOKEN
               valueFrom:

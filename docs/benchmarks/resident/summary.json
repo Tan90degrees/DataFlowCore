@@ -1,0 +1,21 @@
+{
+  "before": {
+    "elapsed_seconds": 1.2724176550000266,
+    "files_per_second": 18.86173137074202,
+    "runner_processes_used": 24,
+    "runner_reused_tasks": 0,
+    "successful_files": 24,
+    "attempts": 24
+  },
+  "resident": {
+    "elapsed_seconds": 0.5907715399989684,
+    "files_per_second": 40.62484120349113,
+    "runner_processes_used": 8,
+    "runner_reused_tasks": 16,
+    "successful_files": 24,
+    "attempts": 24
+  },
+  "throughput_ratio": 2.15382354912061,
+  "baseline_ref": "2f37f717552f3cb8c68108f8b391282d577158e8",
+  "repetitions": 3
+}

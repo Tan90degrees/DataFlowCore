@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import socket
 import sqlite3
 import subprocess
@@ -193,6 +194,11 @@ def run(
                     file_hash(Path(task["result"]["output_dir"]) / entry["path"]) == entry["sha256"]
                 )
         package = Path(sys.modules["dataflowcore"].__file__).parent
+        task_pids = {
+            int(pid)
+            for path in root.glob("process-*.log")
+            for pid in re.findall(r"task_started .*pid=(\d+)", path.read_text())
+        }
         result = {
             "runtime": require_free_threading(),
             "package_version": __version__,
@@ -210,12 +216,15 @@ def run(
                     for name in (
                         "worker.py",
                         "runtime.py",
+                        "runner.py",
+                        "runner_runtime.py",
                         "store.py",
                         "client.py",
                         "contracts.py",
                         "api.py",
                         "__init__.py",
                     )
+                    if (package / name).exists()
                 )
             ).hexdigest(),
             "business_source_digest": hashlib.sha256(
@@ -247,6 +256,11 @@ def run(
             "queue_p95_ms": percentile(queue, 0.95),
             "execution_p95_ms": percentile(runtime, 0.95),
             "used_executors": len(sessions),
+            "runner_processes_used": len(task_pids),
+            "runner_reused_tasks": sum(
+                t["result"]["runtime"].get("runner", {}).get("tasks_before", 0) > 0 for t in tasks
+            ),
+            "rss_scope": tasks[0]["result"].get("usage", {}).get("rss_scope", "task_process"),
             "successful_files": len(tasks),
             "validated_index_rows": expected_rows,
             "attempts": sum(t["attempt_count"] for t in tasks),

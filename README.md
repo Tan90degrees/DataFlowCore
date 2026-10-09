@@ -8,7 +8,7 @@ Pod 或节点故障后自动从头重试，暂不支持断点续跑。没有 Ray
 
 - HTTP 管控 API、Python DAG SDK 和 CLI。
 - JSON DAG 校验、依赖推进、分支并行和数据汇合。
-- 一个执行器可运行多个文件任务，每个任务使用独立子进程。
+- 一个执行器有固定数量的常驻运行槽位，每个槽位连续执行文件任务，复用进程与线程池。
 - PostgreSQL 持久化任务、执行尝试、事件和步骤进度。
 - 幂等提交、幂等领取、幂等完成；租约、超时、重试上限和指数退避。
 - 自动整文件重试、管控重启恢复、旧执行结果隔离。
@@ -120,7 +120,7 @@ task = Client("http://control:8080", "your-admin-token").submit(
 ```
 
 算子预装在镜像中，通过 module:symbol 引用，签名为 operator(context, inputs)。
-支持函数、协程函数、无参数构造的 callable class；实例按任务/步骤创建。
+支持函数、协程函数、无参数构造的 callable class；轻量实例按任务/步骤创建。重资源通过 `context.resource(key, factory)` 在同一槽位内跨任务复用，详见 [常驻运行进程](docs/resident-runners.md)。
 inputs 是直接上游返回值映射，算子必须视依赖结果为只读。
 
 ```python
@@ -146,7 +146,7 @@ def process(context, inputs):
 SDK 的 `statuses(ids)` 每次最多查询100个任务，`wait_many(ids)` 自动分批并容忍
 暂时失联；`iter_tasks()` 遍历所有任务，默认返回摘要。`dataflow drain <session-id>`
 停止该会话领取新任务，已有文件继续执行，替换 Pod 后使用新会话接收任务。
-进度包含步骤时长、等权完成比例，成功结果记录 CPU 时间与进程峰值 RSS。
+进度包含步骤时长、等权完成比例和运行槽位 PID；成功结果记录本任务 CPU 时间与常驻进程生命周期峰值 RSS。
 
 ## K8S 与验收
 

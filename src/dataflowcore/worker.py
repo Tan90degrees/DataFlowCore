@@ -60,6 +60,32 @@ class LogCapture:
             self.file.close()
 
 
+class FileLogs:
+    def __init__(self, path):
+        self.path = path
+
+    def tail(self):
+        try:
+            with self.path.open("rb") as stream:
+                stream.seek(0, 2)
+                stream.seek(max(0, stream.tell() - 16384))
+                return stream.read().decode("utf-8", errors="replace")
+        except FileNotFoundError:
+            return ""
+
+    def close(self):
+        pass
+
+
+@dataclass
+class Slot:
+    process: subprocess.Popen
+    workspace: Path
+    busy: bool = False
+    logs: object = None
+    started_at: float = field(default_factory=time.monotonic)
+
+
 @dataclass
 class Running:
     assignment: dict
@@ -73,6 +99,7 @@ class Running:
     payload: dict | None = None
     closed: bool = False
     lock: object = field(default_factory=threading.RLock)
+    slot: object = None
 
 
 class Worker:
@@ -91,6 +118,9 @@ class Worker:
         allow_gil=False,
         name=None,
         runtime_version=__version__,
+        runner_dag_workers=8,
+        runner_map_workers=8,
+        runner_max_tasks=100,
     ):
         if min(slots, cpu, memory_mb) < 1 or interval <= 0 or stop_grace < 0:
             raise ValueError("invalid worker capacity/timing")
@@ -112,6 +142,13 @@ class Worker:
         self.claim_id = str(uuid.uuid4())
         self.lease_seconds = 30
         self.last_contact = time.monotonic()
+        if not 1 <= runner_dag_workers <= 256 or not 1 <= runner_map_workers <= 256:
+            raise ValueError("runner thread limits must be in 1..256")
+        if not 0 <= runner_max_tasks <= 1000000:
+            raise ValueError("runner max tasks must be in 0..1000000")
+        self.runner_dag_workers, self.runner_map_workers = runner_dag_workers, runner_map_workers
+        self.runner_max_tasks = runner_max_tasks
+        self.runners = {}
 
     def request(self, endpoint, data):
         return self.client.request("POST", "/v1/worker/" + endpoint, data)
@@ -125,53 +162,92 @@ class Worker:
             "token": a["token"],
         }
 
-    def spawn(self, assignment, request_started):
-        workspace = self.root / assignment["attempt_id"]
-        workspace.mkdir()
-        path = workspace / "assignment.json"
-        atomic_json(path, assignment)
-        log_file = LogCapture(workspace / "task.log")
+    def ensure_runners(self):
+        for index in range(self.slots):
+            slot = self.runners.get(index)
+            if slot is not None:
+                if slot.busy or slot.process.poll() is None:
+                    continue
+                if time.monotonic() - slot.started_at < 1:
+                    continue
+                log.info(
+                    "runner_replaced pid=%s code=%s tail=%s",
+                    slot.process.pid,
+                    slot.process.returncode,
+                    slot.logs.tail()[-2000:],
+                )
+                self.signal_group(slot, signal.SIGKILL)
+                slot.logs.close()
+                shutil.rmtree(slot.workspace)
+            workspace = self.root / f"runner-{index}-{uuid.uuid4().hex}"
+            workspace.mkdir()
+            self.runners[index] = self.start_runner(workspace)
+
+    def start_runner(self, workspace):
         command = [
             sys.executable,
             "-m",
             "dataflowcore.cli",
-            "_run",
-            str(path),
+            "_runner",
             "--workspace",
             str(workspace),
             "--data-root",
             str(self.data_root),
             "--parent-pid",
             str(os.getpid()),
+            "--dag-workers",
+            str(self.runner_dag_workers),
+            "--map-workers",
+            str(self.runner_map_workers),
+            "--max-tasks",
+            str(self.runner_max_tasks),
         ]
         if self.allow_gil:
             command.append("--allow-gil")
-        try:
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                env=os.environ | {"PYTHONUNBUFFERED": "1"},
-            )
-        except BaseException:
-            log_file.close()
-            raise
-        log_file.start(process.stdout)
+        capture = LogCapture(workspace / "runner.log")
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env=os.environ | {"PYTHONUNBUFFERED": "1"},
+        )
+        capture.start(process.stdout)
+        log.info("runner_started pid=%s slot=%s", process.pid, workspace.name)
+        return Slot(process, workspace, logs=capture)
+
+    def available_runner(self):
+        for slot in self.runners.values():
+            if not slot.busy and slot.process.poll() is None:
+                if self.read_json(slot.workspace / "state.json", {}).get("state") == "READY":
+                    return slot
+        return None
+
+    def spawn(self, assignment, request_started, slot):
+        workspace = self.root / assignment["attempt_id"]
+        workspace.mkdir()
+        atomic_json(workspace / "assignment.json", assignment)
+        atomic_json(workspace / "runner.json", {"pid": slot.process.pid})
         running = Running(
             assignment,
-            process,
+            slot.process,
             workspace,
             request_started + min(assignment["lease_seconds"], assignment["spec"]["timeout"]),
-            log_file,
+            FileLogs(workspace / "task.log"),
+            slot=slot,
         )
+        slot.busy = True
         with self.running_lock:
             self.running[assignment["attempt_id"]] = running
+        atomic_json(
+            slot.workspace / "job.json",
+            {"workspace": str(workspace), "attempt_id": assignment["attempt_id"]},
+        )
         log.info(
             "task_started task=%s attempt=%s pid=%s",
             assignment["task_id"],
             assignment["attempt_id"],
-            process.pid,
+            slot.process.pid,
         )
 
     @staticmethod
@@ -213,11 +289,13 @@ class Worker:
             return default
 
     def clean(self, aid, running):
-        # Reap the direct child, then kill leftover descendants before releasing capacity.
         with running.lock:
-            running.process.wait(timeout=2)
-            self.signal_group(running, signal.SIGKILL)
             running.closed = True
+            if running.process.poll() is not None:
+                running.process.wait(timeout=2)
+                self.signal_group(running, signal.SIGKILL)
+            if running.slot:
+                running.slot.busy = False
         running.log_file.close()
         # Final progress/log tail is already durable; don't fill the executor's ephemeral disk.
         shutil.rmtree(running.workspace)
@@ -276,12 +354,24 @@ class Worker:
                     self.stop_task(running)
                 if running.payload is None:
                     running.payload = self.read_json(running.workspace / "result.json")
-                if running.payload and running.payload["state"] == "FAILED":
-                    # A failing DAG may still have an uncooperative sibling thread.
+                status = (
+                    self.read_json(running.slot.workspace / "state.json", {})
+                    if running.slot
+                    else {}
+                )
+                finished = status.get("completed_attempt") == aid
+                if running.payload and running.payload["state"] != "SUCCEEDED":
                     self.stop_task(running)
-                if running.process.poll() is None:
+                elif finished and status["state"] == "RETIRE":
+                    self.stop_task(running)
+                alive = running.process.poll() is None
+                reusable = (
+                    alive and finished and status["state"] == "READY" and running.stopped_at is None
+                )
+                if alive and not reusable:
                     continue
-                self.signal_group(running, signal.SIGKILL)
+                if not alive:
+                    self.signal_group(running, signal.SIGKILL)
                 if running.payload is None:
                     running.payload = {
                         "state": "FAILED",
@@ -305,6 +395,9 @@ class Worker:
         for _ in range(min(32, self.slots - len(self.running))):
             if self.stopped.is_set() or self.draining:
                 break
+            slot = self.available_runner()
+            if slot is None:
+                break
             started = time.monotonic()
             try:
                 assignment = self.request(
@@ -317,7 +410,7 @@ class Worker:
                 raise
             if assignment:
                 if assignment["attempt_id"] not in self.running:
-                    self.spawn(assignment, started)
+                    self.spawn(assignment, started, slot)
                 self.claim_id = str(uuid.uuid4())
             else:
                 break
@@ -330,6 +423,7 @@ class Worker:
         watchdog = threading.Thread(target=self.lease_watchdog, name="lease-watchdog", daemon=True)
         watchdog.start()
         try:
+            self.ensure_runners()
             while not self.stopped.is_set() or self.running:
                 now = time.monotonic()
                 # Safety watchdog runs even when the control plane is unavailable.
@@ -338,6 +432,8 @@ class Worker:
                         self.stop_task(running, invalid=True)
                         if running.process.poll() is not None:
                             self.clean(aid, running)
+                if not self.stopped.is_set():
+                    self.ensure_runners()
                 atomic_json(
                     self.root.parent / "health.json",
                     {
@@ -345,6 +441,13 @@ class Worker:
                         "session_id": self.session,
                         "draining": self.stopped.is_set() or self.draining,
                         "registered": self.registered,
+                        "runner_slots": self.slots,
+                        "live_runners": sum(
+                            slot.process.poll() is None
+                            and self.read_json(slot.workspace / "state.json", {}).get("state")
+                            in ("READY", "BUSY")
+                            for slot in self.runners.values()
+                        ),
                     },
                 )
                 if now >= next_tick:
@@ -359,7 +462,19 @@ class Worker:
             watchdog.join(timeout=2)
             for aid, running in list(self.running.items()):
                 self.signal_group(running, signal.SIGKILL)
+                running.process.wait(timeout=2)
                 self.clean(aid, running)
+            for slot in self.runners.values():
+                if slot.process.poll() is None:
+                    self.signal_group(slot, signal.SIGTERM)
+                    try:
+                        slot.process.wait(timeout=max(0.1, min(self.stop_grace, 2)))
+                    except subprocess.TimeoutExpired:
+                        pass
+                self.signal_group(slot, signal.SIGKILL)
+                slot.process.wait(timeout=2)
+                slot.logs.close()
+                shutil.rmtree(slot.workspace)
             # Never delete output files here: accepted results outlive the worker Pod.
             if not any(self.root.iterdir()):
                 shutil.rmtree(self.root)

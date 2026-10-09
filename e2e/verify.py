@@ -129,11 +129,27 @@ try:
     finished = state(queued["id"], "SUCCEEDED")
     verify_business(finished)
     evidence["drain_and_replace"] = finished
+    # Pin consecutive files to one single-slot executor and verify warm reuse.
+    live = [w for w in client.request("GET", "/v1/workers")["workers"] if w["online"]]
+    selected = finished["attempts"][-1]["worker_session"]
+    for worker in live:
+        if worker["session_id"] != selected:
+            client.drain(worker["session_id"])
+    first = state(submit(0)["id"], "SUCCEEDED")
+    second = state(submit(0)["id"], "SUCCEEDED")
+    verify_business(first)
+    verify_business(second)
+    assert first["attempts"][-1]["worker_session"] == selected
+    assert second["attempts"][-1]["worker_session"] == selected
+    a, b = first["result"]["runtime"]["runner"], second["result"]["runtime"]["runner"]
+    assert a["pid"] == b["pid"]
+    assert b["tasks_before"] == a["tasks_before"] + 1
+    evidence["resident_reuse"] = {"first": first, "second": second}
 finally:
     forward.terminate()
     forward.wait(timeout=5)
 Path(".e2e/evidence.json").write_text(json.dumps(evidence, indent=2))
 print(
     "Kubernetes business acceptance passed: artifacts, idempotent index, Pod recovery, "
-    "control restart, cancellation, drain, no GIL"
+    "control restart, cancellation, drain, resident PID reuse, no GIL"
 )

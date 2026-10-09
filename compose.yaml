@@ -34,7 +34,7 @@ services:
     restart: unless-stopped
   worker:
     image: dataflowcore:local
-    command: [worker, --url, "http://control:8080", --slots, "2", --cpu, "4", --memory-mb, "2048"]
+    command: [worker, --url, "http://control:8080", --slots, "2", --cpu, "4", --memory-mb, "2048", --runner-dag-workers, "2", --runner-map-workers, "4", --runner-max-tasks, "100"]
     environment:
       DATAFLOW_WORKER_TOKEN: ${DATAFLOW_WORKER_TOKEN}
     volumes:
