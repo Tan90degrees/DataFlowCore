@@ -1,7 +1,7 @@
 export function template(version = "0.2.0") {
   return {
-    name: "文档入库",
-    input_path: "/dataflow/input/document.txt",
+    name: "文本词频统计",
+    input_path: "/dataflow/input.txt",
     pool: "default",
     runtime_version: version,
     dag_workers: 2,

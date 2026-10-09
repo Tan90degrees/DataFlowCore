@@ -246,9 +246,17 @@ test("mobile editor is usable, API outage preserves edits and auth expiry stops 
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await connect(page);
-  await page.getByRole("link", { name: "DAG 编排" }).click();
+  await page.goto("/#dag");
   await page.getByLabel("任务名称").fill("离线编辑保留");
+  await page.locator("#node-parameters").fill("{");
+  await page.getByRole("button", { name: /配置 API 连接/ }).click();
+  await page.getByLabel("API 地址").fill(base);
+  await page.getByLabel("管理令牌").fill("a".repeat(32));
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await expect(page.getByRole("button", { name: /API 已连接/ })).toBeVisible();
+  await expect(page.getByLabel("任务名称")).toHaveValue("离线编辑保留");
+  await expect(page.locator("#node-parameters")).toHaveValue("{");
+  await page.locator("#node-parameters").fill("{}");
   await page.route("**/v1/dags/validate", (route) => route.abort());
   await page.getByRole("button", { name: "校验 DAG" }).click();
   await expect(page.locator("#notice")).toContainText("无法连接 API");

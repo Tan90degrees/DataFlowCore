@@ -243,7 +243,7 @@ $("#disconnect").onclick = () => {
   connectionUI();
   $("#connect-dialog").close();
   $("#refresh-status").textContent = "已断开";
-  render();
+  if (route !== "dag") render();
 };
 $("#connect-form").onsubmit = async (event) => {
   event.preventDefault();
@@ -267,7 +267,7 @@ $("#connect-form").onsubmit = async (event) => {
     connectionUI();
     $("#connect-dialog").close();
     $("#notice").hidden = true;
-    render();
+    if (route !== "dag") render();
     await refresh();
   } catch (error) {
     $("#connect-error").textContent = error.message;
