@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import __version__
+
 TERMINAL = frozenset({"SUCCEEDED", "FAILED", "CANCELLED"})
 ACTIVE = frozenset({"RUNNING", "STOPPING"})
 SYMBOL = re.compile(
@@ -69,7 +71,7 @@ class TaskSpec:
     max_attempts: int = 3
     retry_delay: float = 2.0
     timeout: float = 3600.0
-    runtime_version: str = "0.1.0"
+    runtime_version: str = __version__
     input_sha256: str | None = None
 
     @classmethod

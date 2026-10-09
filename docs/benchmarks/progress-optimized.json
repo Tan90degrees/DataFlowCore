@@ -1,0 +1,5 @@
+{
+  "reports": 10000,
+  "durable_writes": 3,
+  "elapsed_seconds": 0.006434424999952171
+}

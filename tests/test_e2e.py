@@ -117,13 +117,6 @@ class Cluster:
             log.close()
 
 
-@pytest.fixture
-def cluster(tmp_path, store):
-    value = Cluster(tmp_path, store.dsn)
-    yield value
-    value.close()
-
-
 def test_actual_file_dag_output_and_gil(cluster):
     cluster.worker()
     task = cluster.submit(

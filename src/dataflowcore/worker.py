@@ -11,11 +11,12 @@ import sys
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import __version__
 from .client import APIError, Client
+from .contracts import canonical
 from .runtime import atomic_json, require_free_threading
 
 log = logging.getLogger(__name__)
@@ -70,6 +71,8 @@ class Running:
     invalid: bool = False
     cancelling: bool = False
     payload: dict | None = None
+    closed: bool = False
+    lock: object = field(default_factory=threading.RLock)
 
 
 class Worker:
@@ -101,6 +104,9 @@ class Worker:
         self.interval, self.stop_grace, self.allow_gil = interval, stop_grace, allow_gil
         self.runtime_version = runtime_version
         self.running = {}
+        self.running_lock = threading.Lock()
+        self.watchdog_stopped = threading.Event()
+        self.draining = False
         self.stopped = threading.Event()
         self.registered = False
         self.claim_id = str(uuid.uuid4())
@@ -152,13 +158,15 @@ class Worker:
             log_file.close()
             raise
         log_file.start(process.stdout)
-        self.running[assignment["attempt_id"]] = Running(
+        running = Running(
             assignment,
             process,
             workspace,
             request_started + min(assignment["lease_seconds"], assignment["spec"]["timeout"]),
             log_file,
         )
+        with self.running_lock:
+            self.running[assignment["attempt_id"]] = running
         log.info(
             "task_started task=%s attempt=%s pid=%s",
             assignment["task_id"],
@@ -175,13 +183,27 @@ class Worker:
             pass
 
     def stop_task(self, running, invalid=False, cancelling=False):
-        running.invalid |= invalid
-        running.cancelling |= cancelling
-        if running.stopped_at is None:
-            running.stopped_at = time.monotonic()
-            self.signal_group(running, signal.SIGTERM)
-        if time.monotonic() - running.stopped_at >= self.stop_grace:
-            self.signal_group(running, signal.SIGKILL)
+        with running.lock:
+            if running.closed:
+                return
+            running.invalid |= invalid
+            running.cancelling |= cancelling
+            if running.stopped_at is None:
+                running.stopped_at = time.monotonic()
+                self.signal_group(running, signal.SIGTERM)
+            if time.monotonic() - running.stopped_at >= self.stop_grace:
+                self.signal_group(running, signal.SIGKILL)
+
+    def lease_watchdog(self):
+        # Networking can block for seconds per attempt. Lease safety must not share
+        # the networking loop, especially with many concurrent file tasks.
+        while not self.watchdog_stopped.wait(0.05):
+            with self.running_lock:
+                items = list(self.running.values())
+            for running in items:
+                with running.lock:
+                    if time.monotonic() >= running.deadline or running.invalid:
+                        self.stop_task(running, invalid=True)
 
     @staticmethod
     def read_json(path, default=None):
@@ -192,12 +214,15 @@ class Worker:
 
     def clean(self, aid, running):
         # Reap the direct child, then kill leftover descendants before releasing capacity.
-        running.process.wait(timeout=2)
-        self.signal_group(running, signal.SIGKILL)
+        with running.lock:
+            running.process.wait(timeout=2)
+            self.signal_group(running, signal.SIGKILL)
+            running.closed = True
         running.log_file.close()
         # Final progress/log tail is already durable; don't fill the executor's ephemeral disk.
         shutil.rmtree(running.workspace)
-        self.running.pop(aid)
+        with self.running_lock:
+            self.running.pop(aid)
 
     def tick(self):
         if not self.registered:
@@ -217,7 +242,10 @@ class Worker:
             if self.interval >= self.lease_seconds / 3:
                 raise ValueError("heartbeat interval must be less than one third of lease duration")
             self.registered = True
-        self.request("heartbeat", {"session_id": self.session, "draining": self.stopped.is_set()})
+        heartbeat = self.request(
+            "heartbeat", {"session_id": self.session, "draining": self.stopped.is_set()}
+        )
+        self.draining = heartbeat.get("draining", False)
         self.last_contact = time.monotonic()
         for aid, running in list(self.running.items()):
             now = time.monotonic()
@@ -230,9 +258,18 @@ class Worker:
             try:
                 progress = self.read_json(running.workspace / "progress.json", {})
                 progress["log_tail"] = running.log_file.tail()
+                # JSON escaping can expand a non-UTF8 log tail by up to 6x.
+                # Diagnostic output must never invalidate an otherwise healthy lease.
+                while len(canonical(progress)) > 262144 and progress["log_tail"]:
+                    progress["log_tail"] = progress["log_tail"][
+                        len(progress["log_tail"]) // 2 + 1 :
+                    ]
                 started = time.monotonic()
                 renewed = self.request("renew", {**self.identity(running), "progress": progress})
-                running.deadline = started + renewed["lease_seconds"]
+                with running.lock:
+                    if running.invalid:
+                        continue
+                    running.deadline = started + renewed["lease_seconds"]
                 if renewed["cancel"]:
                     self.stop_task(running, cancelling=True)
                 elif running.stopped_at is not None:
@@ -263,7 +300,11 @@ class Worker:
                     log.warning("attempt_request_failed status=%s attempt=%s", exc.status, aid)
             except OSError, TimeoutError:
                 log.warning("attempt_request_unavailable attempt=%s", aid)
-        if not self.stopped.is_set() and len(self.running) < self.slots:
+        # Fill available slots in this tick; one claim per interval throttles a
+        # multi-slot executor to at most 1/interval files per second.
+        for _ in range(min(32, self.slots - len(self.running))):
+            if self.stopped.is_set() or self.draining:
+                break
             started = time.monotonic()
             try:
                 assignment = self.request(
@@ -278,12 +319,16 @@ class Worker:
                 if assignment["attempt_id"] not in self.running:
                     self.spawn(assignment, started)
                 self.claim_id = str(uuid.uuid4())
+            else:
+                break
 
     def run(self):
         require_free_threading(self.allow_gil)
         signal.signal(signal.SIGTERM, lambda *_: self.stopped.set())
         signal.signal(signal.SIGINT, lambda *_: self.stopped.set())
         next_tick = 0
+        watchdog = threading.Thread(target=self.lease_watchdog, name="lease-watchdog", daemon=True)
+        watchdog.start()
         try:
             while not self.stopped.is_set() or self.running:
                 now = time.monotonic()
@@ -298,7 +343,7 @@ class Worker:
                     {
                         "updated_at": time.time(),
                         "session_id": self.session,
-                        "draining": self.stopped.is_set(),
+                        "draining": self.stopped.is_set() or self.draining,
                         "registered": self.registered,
                     },
                 )
@@ -310,6 +355,8 @@ class Worker:
                     next_tick = time.monotonic() + self.interval
                 time.sleep(0.05)
         finally:
+            self.watchdog_stopped.set()
+            watchdog.join(timeout=2)
             for aid, running in list(self.running.items()):
                 self.signal_group(running, signal.SIGKILL)
                 self.clean(aid, running)

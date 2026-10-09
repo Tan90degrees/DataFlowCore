@@ -6,7 +6,7 @@ import json
 import logging
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from . import __version__
 from .contracts import Conflict, Invalid, Missing, TaskSpec, integer
@@ -174,9 +174,21 @@ class Handler(BaseHTTPRequestHandler):
             normalized = {**spec.json(), "input_sha256": digest}
             return store.submit(TaskSpec.parse(normalized), self.request_key())
         if method == "GET" and path == "/v1/tasks":
-            return {"tasks": store.tasks()}
+            query = parse_qs(urlsplit(self.path).query)
+            return store.task_page(
+                limit=int(query.get("limit", ["100"])[0]),
+                cursor=query.get("cursor", [None])[0],
+                state=query.get("state", [None])[0],
+                pool=query.get("pool", [None])[0],
+                summary=query.get("summary", ["0"])[0] == "1",
+            )
+        if method == "POST" and path == "/v1/tasks/status":
+            return store.statuses(data.get("task_ids"))
         if method == "GET" and path == "/v1/workers":
             return {"workers": store.workers()}
+        if method == "POST" and len(parts) == 4 and parts[:2] == ["v1", "workers"]:
+            if parts[3] == "drain":
+                return store.drain(parts[2])
         if len(parts) >= 3 and parts[:2] == ["v1", "tasks"]:
             tid = parts[2]
             if method == "GET" and len(parts) == 3:

@@ -35,6 +35,15 @@ jobs:
       - run: dataflow doctor
       - run: python -c 'import psycopg; import sys; assert not sys._is_gil_enabled()'
       - run: pytest -q
+      - name: PostgreSQL business benchmark
+        run: |
+          python scripts/business_benchmark.py --files 24 --workers 2 --slots 4 --dsn "$DATAFLOW_TEST_DATABASE_URL" --output .e2e/business-postgres.json
+          python scripts/business_benchmark.py --files 120 --workers 2 --slots 4 --chars 2048 --dsn "$DATAFLOW_TEST_DATABASE_URL" --output .e2e/business-batch-120.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: business-performance
+          path: .e2e/business-*.json
       - run: python -m build
       - uses: azure/setup-helm@v4.3.0
         with:

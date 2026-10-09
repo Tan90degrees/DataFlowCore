@@ -1,0 +1,8 @@
+include LICENSE README.md Dockerfile compose.yaml .dockerignore
+recursive-include docs *.md *.json
+recursive-include charts *.yaml
+recursive-include scripts *.py
+recursive-include examples *.py *.json
+recursive-include tests *.py
+recursive-include e2e *.py *.sh *.yaml
+recursive-include .github *.yml
