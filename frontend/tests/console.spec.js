@@ -303,3 +303,24 @@ test("mobile editor is usable, API outage preserves edits and auth expiry stops 
     page.getByRole("button", { name: /配置 API 连接/ }),
   ).toBeVisible();
 });
+
+test("development server default /api connects and validates through the real proxy", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: /配置 API 连接/ }).click();
+  await expect(page.getByLabel("API 地址")).toHaveValue("/api");
+  await page.getByLabel("管理令牌").fill("wrong");
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("authentication required");
+  await page.getByLabel("管理令牌").fill("a".repeat(32));
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await expect(page.getByRole("button", { name: /API 已连接/ })).toBeVisible();
+  await page.getByRole("link", { name: "DAG 编排" }).click();
+  await page.getByLabel("共享文件绝对路径").fill(input);
+  const validation = page.waitForResponse((response) =>
+    response.url().includes("/api/v1/dags/validate") && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "校验 DAG" }).click();
+  expect((await validation).status()).toBe(200);
+});
