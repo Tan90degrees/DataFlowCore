@@ -418,11 +418,11 @@ test("cancel a slow real upload and keep the task draft", async ({ page, request
     if (!dirs.length) return 0;
     return (await stat(path.join(staging, dirs[0], "source", "取消上传.txt")).catch(() => ({ size: 0 }))).size;
   }).toBeGreaterThan(0);
-  await page.getByRole("button", { name: "取消上传", exact: true }).click();
-  await session.send("Network.emulateNetworkConditions", {
-    offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1,
+  const aborted = page.waitForEvent("requestfailed", {
+    predicate: (event) => event.method() === "POST" && event.url().includes("/v1/files?filename="),
   });
-  await session.detach();
+  await page.getByRole("button", { name: "取消上传", exact: true }).click();
+  await aborted;
   await expect(page.locator("#upload-status")).toContainText("已取消");
   await expect(page.getByLabel("任务名称")).toHaveValue("取消上传保留的草稿");
   await expect.poll(() => readdir(staging)).toEqual([]);
@@ -432,4 +432,7 @@ test("cancel a slow real upload and keep the task draft", async ({ page, request
   await expect(page.getByRole("button", { name: "提交任务" })).toBeDisabled();
   await page.getByRole("button", { name: "清除所选文件" }).click();
   await expect(page.getByRole("button", { name: "提交任务" })).toBeEnabled();
+  // Keep the wire throttled until cancellation has reached the server. Removing
+  // throttling immediately after the click can flush queued bytes before abort.
+  await session.detach();
 });
