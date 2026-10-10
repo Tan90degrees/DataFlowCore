@@ -48,3 +48,9 @@ helm upgrade dataflowcore charts/dataflowcore --reuse-values --set worker.replic
 [常驻运行进程](resident-runners.md)。
 元数据在PostgreSQL，输入/输出在PVC，两者需备份；恢复后过期任务按次数上限重跑。
 只剩输出目录无法恢复已丢失的数据库提交语义。
+
+## 文件上传
+
+启用前端上传时管控也需要共享卷写权限；新 Chart 已在 `control.uploadMaxBytes>0` 时启用，设为 0 时恢复只读。Docker Compose 的管控挂载同样已改为可写。前端本身不挂载共享卷，只代理管理 API。
+
+可设置 `control.uploadMaxBytes=1073741824` 与 `control.uploadTimeout=900` 允许最多 1 GiB、900 秒的接收；默认 256 MiB、300 秒、4 个同时上传。外部 Ingress/网关也需同步体积与超时限制。配置、记录备份与清理边界见 [file-uploads.md](file-uploads.md)。

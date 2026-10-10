@@ -19,10 +19,13 @@ services:
       DATAFLOW_DATABASE_URL: postgresql://dataflow:${DATAFLOW_DB_PASSWORD}@postgres:5432/dataflow
       DATAFLOW_ADMIN_TOKEN: ${DATAFLOW_ADMIN_TOKEN:?Set DATAFLOW_ADMIN_TOKEN in .env}
       DATAFLOW_WORKER_TOKEN: ${DATAFLOW_WORKER_TOKEN:?Set DATAFLOW_WORKER_TOKEN in .env}
+      DATAFLOW_UPLOAD_MAX_BYTES: ${DATAFLOW_UPLOAD_MAX_BYTES:-268435456}
+      DATAFLOW_UPLOAD_CONCURRENCY: ${DATAFLOW_UPLOAD_CONCURRENCY:-4}
+      DATAFLOW_UPLOAD_TIMEOUT: ${DATAFLOW_UPLOAD_TIMEOUT:-300}
     ports:
       - 127.0.0.1:8080:8080
     volumes:
-      - ./data:/dataflow:ro
+      - ./data:/dataflow
     depends_on:
       postgres:
         condition: service_healthy

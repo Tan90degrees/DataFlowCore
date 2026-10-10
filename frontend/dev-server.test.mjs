@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import http from "node:http";
@@ -74,6 +75,29 @@ test("preserves backend authentication failures", async (t) => {
   const response = await fetch(base + "/api/v1/overview");
   assert.equal(response.status, 401);
   assert.equal((await response.json()).error, "authentication required");
+});
+
+test("streams a binary file larger than the JSON budget without changing its bytes", async (t) => {
+  const expected = Buffer.alloc(2 * 1024 * 1024, 0xa8);
+  const upstream = await listen(t, http.createServer(async (req, res) => {
+    const digest = createHash("sha256");
+    let size = 0;
+    for await (const block of req) { size += block.length; digest.update(block); }
+    res.writeHead(201, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ size, hash: digest.digest("hex"), type: req.headers["content-type"],
+      key: req.headers["idempotency-key"], path: req.url }));
+  }));
+  const base = await listen(t, createDevServer(upstream));
+  const path = "/v1/files?filename=" + encodeURIComponent("中文文件.pdf");
+  const response = await fetch(base + "/api" + path, {
+    method: "POST", body: expected,
+    headers: { "Content-Type": "application/octet-stream", "Idempotency-Key": "binary-upload" },
+  });
+  assert.equal(response.status, 201);
+  assert.deepEqual(await response.json(), {
+    size: expected.length, hash: createHash("sha256").update(expected).digest("hex"),
+    type: "application/octet-stream", key: "binary-upload", path,
+  });
 });
 
 test("unavailable API returns actionable JSON while the frontend remains available", async (t) => {

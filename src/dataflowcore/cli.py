@@ -25,6 +25,18 @@ def parser():
     control.add_argument("--data-root", default=os.getenv("DATAFLOW_DATA_ROOT", "."))
     control.add_argument("--lease", type=float, default=30)
     control.add_argument(
+        "--upload-max-bytes",
+        type=int,
+        default=int(os.getenv("DATAFLOW_UPLOAD_MAX_BYTES", str(256 * 1024 * 1024))),
+        help="maximum bytes per uploaded file; 0 disables uploads",
+    )
+    control.add_argument(
+        "--upload-concurrency", type=int, default=int(os.getenv("DATAFLOW_UPLOAD_CONCURRENCY", "4"))
+    )
+    control.add_argument(
+        "--upload-timeout", type=float, default=float(os.getenv("DATAFLOW_UPLOAD_TIMEOUT", "300"))
+    )
+    control.add_argument(
         "--cors-origins",
         default=os.getenv("DATAFLOW_CORS_ORIGINS", ""),
         help="comma-separated exact browser origins; empty disables cross-origin access",
@@ -103,6 +115,9 @@ def main():
             cors_origins=[
                 origin.strip() for origin in args.cors_origins.split(",") if origin.strip()
             ],
+            upload_max_bytes=args.upload_max_bytes,
+            upload_concurrency=args.upload_concurrency,
+            upload_timeout=args.upload_timeout,
         )
     elif args.command == "worker":
         from .worker import Worker

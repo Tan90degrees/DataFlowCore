@@ -12,6 +12,7 @@ from . import __version__
 from .contracts import Conflict, Invalid, Missing, TaskSpec, integer
 from .runtime import under_root
 from .store import Store
+from .uploads import DEFAULT_MAX_BYTES, UploadError, Uploads
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +31,9 @@ class Server(ThreadingHTTPServer):
         insecure=False,
         reap_interval=1,
         cors_origins=(),
+        upload_max_bytes=DEFAULT_MAX_BYTES,
+        upload_concurrency=4,
+        upload_timeout=300,
     ):
         if not insecure and (
             len(admin_token) < 24 or len(worker_token) < 24 or admin_token == worker_token
@@ -55,6 +59,11 @@ class Server(ThreadingHTTPServer):
         self.stopped = threading.Event()
         self.slots = threading.BoundedSemaphore(64)
         super().__init__(address, Handler)
+        try:
+            self.uploads = Uploads(data_root, upload_max_bytes, upload_concurrency, upload_timeout)
+        except BaseException:
+            self.server_close()
+            raise
 
     def process_request(self, request, client_address):
         if not self.slots.acquire(blocking=False):
@@ -179,8 +188,35 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(data)
                 return
+            if method == "POST" and path == "/v1/files":
+                names = parse_qs(urlsplit(self.path).query, keep_blank_values=True).get(
+                    "filename", []
+                )
+                if len(names) != 1:
+                    raise Invalid("provide exactly one filename query parameter")
+                if self.headers.get_content_type() != "application/octet-stream":
+                    raise UploadError(415, "upload Content-Type must be application/octet-stream")
+                lengths = self.headers.get_all("Content-Length", [])
+                if not lengths:
+                    raise UploadError(411, "upload Content-Length is required")
+                if (
+                    len(lengths) != 1
+                    or not lengths[0].isascii()
+                    or not lengths[0].isdigit()
+                    or self.headers.get("Transfer-Encoding")
+                ):
+                    raise Invalid(
+                        "upload requires one valid Content-Length, without Transfer-Encoding"
+                    )
+                status, result = self.server.uploads.receive(
+                    self.request_key(), names[0], int(lengths[0]), self.rfile, self.connection
+                )
+                self.send_json(status, result)
+                return
             result = self.route(method, path, self.body() if method == "POST" else {})
             self.send_json(200, result)
+        except UploadError as exc:
+            self.send_json(exc.status, {"error": str(exc)})
         except Missing as exc:
             self.send_json(404, {"error": str(exc)})
         except Conflict as exc:
@@ -196,6 +232,10 @@ class Handler(BaseHTTPRequestHandler):
         parts = path.strip("/").split("/")
         if method == "GET" and path == "/v1/overview":
             return {"task_counts": store.stats(), "version": __version__}
+        if method == "GET" and path == "/v1/files/limits":
+            return self.server.uploads.limits()
+        if method == "GET" and path == "/v1/files":
+            return self.server.uploads.get(self.request_key())
         if method == "POST" and path == "/v1/dags/validate":
             spec = TaskSpec.parse(data)
             resolved, layers = set(), []
@@ -314,6 +354,9 @@ def serve(
     insecure=False,
     lease=30,
     cors_origins=(),
+    upload_max_bytes=DEFAULT_MAX_BYTES,
+    upload_concurrency=4,
+    upload_timeout=300,
 ):
     store = Store(dsn, lease)
     store.migrate()
@@ -325,6 +368,9 @@ def serve(
         worker_token,
         insecure,
         cors_origins=cors_origins,
+        upload_max_bytes=upload_max_bytes,
+        upload_concurrency=upload_concurrency,
+        upload_timeout=upload_timeout,
     )
     import signal
 
