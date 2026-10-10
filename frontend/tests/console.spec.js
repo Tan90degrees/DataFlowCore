@@ -1,5 +1,7 @@
 import { test, expect } from "@playwright/test";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { readdir, stat } from "node:fs/promises";
 const input = path.resolve("../.e2e/console/input.txt");
 const base = "http://127.0.0.1:8086";
 const headers = { Authorization: `Bearer ${"a".repeat(32)}` };
@@ -17,7 +19,7 @@ async function connect(page, token = "a".repeat(32)) {
 }
 async function importSpec(page, spec) {
   await page.getByRole("link", { name: "DAG 编排" }).click();
-  await page.locator('input[type="file"]').setInputFiles({
+  await page.locator("#dag-import").setInputFiles({
     name: "spec.json",
     mimeType: "application/json",
     buffer: Buffer.from(JSON.stringify(spec)),
@@ -164,6 +166,73 @@ test("auth, cursor pagination, filters, DAG edits, cycle rejection and business 
   await expect(
     page.getByRole("button", { name: /配置 API 连接/ }),
   ).toBeVisible();
+});
+
+test("local upload through /api preserves edits, confirms lost response and executes the real file", async ({
+  page, request,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(Crypto.prototype, "randomUUID", { value: undefined });
+  });
+  await page.goto("/#dag");
+  await page.getByRole("button", { name: /配置 API 连接/ }).click();
+  await page.getByLabel("管理令牌").fill("a".repeat(32));
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await expect(page.getByRole("button", { name: /API 已连接/ })).toBeVisible();
+  await importSpec(page, spec("浏览器上传文件业务", [
+    { id: "parse", callable: "dataflowcore.examples.ingestion:parse" },
+    { id: "stats", callable: "dataflowcore.examples.ingestion:statistics", depends_on: ["parse"] },
+  ]));
+  await expect(page.getByLabel("任务名称")).toHaveValue("浏览器上传文件业务");
+  await page.locator("#task-parameters").evaluate((node) => { node.closest("details").open = true; });
+  await page.locator("#task-parameters").fill("{");
+  await page.getByLabel("本地输入文件").setInputFiles({
+    name: "超过上限.txt", mimeType: "text/plain", buffer: Buffer.alloc(4 * 1024 * 1024),
+  });
+  await page.getByRole("button", { name: "上传文件", exact: true }).click();
+  await expect(page.locator("#upload-status")).toContainText("超过上传上限");
+  await expect(page.getByRole("button", { name: "提交任务" })).toBeDisabled();
+  await expect(page.getByLabel("共享文件绝对路径")).toHaveValue(input);
+  await expect(page.locator("#task-parameters")).toHaveValue("{");
+  await page.getByRole("button", { name: "清除所选文件" }).click();
+
+  const payload = Buffer.from("上传文档 DataFlow hello world\n".repeat(100) + " ".repeat(2 * 1024 * 1024));
+  let uploaded, uploadKey, posts = 0;
+  await page.route(/\/api\/v1\/files\?filename=/, async (route) => {
+    posts++;
+    uploadKey = route.request().headers()["idempotency-key"];
+    const response = await route.fetch();
+    expect(response.status()).toBe(201);
+    uploaded = await response.json();
+    await page.getByLabel("共享文件绝对路径").focus();
+    await route.abort("connectionfailed");
+  }, { times: 1 });
+  await page.getByLabel("本地输入文件").setInputFiles({
+    name: "前端上传 文档.txt", mimeType: "text/plain", buffer: payload,
+  });
+  await page.getByRole("button", { name: "上传文件", exact: true }).click();
+  await expect(page.locator("#upload-status")).toContainText("上传完成");
+  await page.getByLabel("任务名称").click();
+  expect(posts).toBe(1);
+  expect(uploaded.input_sha256).toBe(createHash("sha256").update(payload).digest("hex"));
+  await expect(page.getByLabel("共享文件绝对路径")).toHaveValue(uploaded.input_path);
+  await expect(page.locator("#input-checksum")).toHaveValue(uploaded.input_sha256);
+  await expect(page.locator("#task-parameters")).toHaveValue("{");
+  await expect(page.getByRole("progressbar", { name: "文件上传进度" })).toHaveJSProperty("value", 100);
+  const recovered = await request.get(base + "/v1/files", {
+    headers: { ...headers, "Idempotency-Key": uploadKey },
+  });
+  expect(await recovered.json()).toEqual(uploaded);
+  await page.screenshot({ path: "test-results/upload-ready.png", fullPage: true });
+  await page.locator("#task-parameters").fill('{"business":"前端上传"}');
+  const id = await submit(page);
+  await expect(page.locator(".title-meta .badge")).toHaveText("已完成");
+  const finished = await (await request.get(base + "/v1/tasks/" + id, { headers })).json();
+  expect(finished.spec.input_path).toBe(uploaded.input_path);
+  expect(finished.spec.input_sha256).toBe(uploaded.input_sha256);
+  expect(finished.spec.parameters.business).toBe("前端上传");
+  expect(finished.result.steps.stats.words).toBe(400);
+  expect(finished.result.runtime.gil_enabled).toBe(false);
 });
 
 test("lost submit response is idempotent; cancellation, retry, failures and worker drain", async ({
@@ -323,4 +392,44 @@ test("development server default /api connects and validates through the real pr
   );
   await page.getByRole("button", { name: "校验 DAG" }).click();
   expect((await validation).status()).toBe(200);
+});
+
+test("cancel a slow real upload and keep the task draft", async ({ page, request }) => {
+  await connect(page);
+  await page.getByRole("link", { name: "DAG 编排" }).click();
+  await page.getByLabel("任务名称").fill("取消上传保留的草稿");
+  const session = await page.context().newCDPSession(page);
+  await session.send("Network.enable");
+  await session.send("Network.emulateNetworkConditions", {
+    offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: 16 * 1024,
+  });
+  let key;
+  page.on("request", (event) => {
+    if (event.method() === "POST" && event.url().includes("/v1/files?filename="))
+      key = event.headers()["idempotency-key"];
+  });
+  await page.getByLabel("本地输入文件").setInputFiles({
+    name: "取消上传.txt", mimeType: "text/plain", buffer: Buffer.alloc(2 * 1024 * 1024, 0x61),
+  });
+  await page.getByRole("button", { name: "上传文件", exact: true }).click();
+  const staging = path.join(path.dirname(input), "uploads", ".staging");
+  await expect.poll(async () => {
+    const dirs = await readdir(staging);
+    if (!dirs.length) return 0;
+    return (await stat(path.join(staging, dirs[0], "source", "取消上传.txt")).catch(() => ({ size: 0 }))).size;
+  }).toBeGreaterThan(0);
+  await page.getByRole("button", { name: "取消上传", exact: true }).click();
+  await session.send("Network.emulateNetworkConditions", {
+    offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1,
+  });
+  await session.detach();
+  await expect(page.locator("#upload-status")).toContainText("已取消");
+  await expect(page.getByLabel("任务名称")).toHaveValue("取消上传保留的草稿");
+  await expect.poll(() => readdir(staging)).toEqual([]);
+  expect((await request.get(base + "/v1/files", {
+    headers: { ...headers, "Idempotency-Key": key },
+  })).status()).toBe(404);
+  await expect(page.getByRole("button", { name: "提交任务" })).toBeDisabled();
+  await page.getByRole("button", { name: "清除所选文件" }).click();
+  await expect(page.getByRole("button", { name: "提交任务" })).toBeEnabled();
 });

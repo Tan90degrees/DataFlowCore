@@ -903,6 +903,20 @@ summary {
 .graph-scroll {
   max-width: 100%;
 }
+.file-upload {
+  margin: 18px 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.file-upload progress {
+  width: 100%;
+  margin-top: 12px;
+  accent-color: var(--accent);
+}
+.file-upload .hint {
+  overflow-wrap: anywhere;
+}
 @media (max-width: 1050px) {
   .editor-grid,
   .detail-grid {

@@ -1,4 +1,4 @@
-import { API, APIError } from "./api.js";
+import { API, APIError, requestKey } from "./api.js";
 import { graph, template } from "./dag.js";
 
 const $ = (selector) => document.querySelector(selector);
@@ -42,6 +42,8 @@ let draft = template(),
   submitIdentity = null;
 const retryKeys = new Map();
 let submitting = false;
+let upload = { file: null, result: null, message: "选择本地文件，上传成功后自动填入任务输入。", fraction: 0 };
+let uploadOperation = null;
 
 // All business data is rendered with textContent; no HTML interpolation.
 function h(tag, attrs = {}, ...children) {
@@ -236,6 +238,7 @@ function openConnection() {
 $("#connection").onclick = openConnection;
 $("#close-connect").onclick = () => $("#connect-dialog").close();
 $("#disconnect").onclick = () => {
+  cancelUpload();
   epoch++;
   connected = false;
   api = null;
@@ -244,6 +247,7 @@ $("#disconnect").onclick = () => {
   $("#connect-dialog").close();
   $("#refresh-status").textContent = "已断开";
   if (route !== "dag") render();
+  else paintUpload();
 };
 $("#connect-form").onsubmit = async (event) => {
   event.preventDefault();
@@ -257,6 +261,13 @@ $("#connect-form").onsubmit = async (event) => {
     );
     const overview = await candidate.request("/v1/overview");
     if (epoch !== connectionEpoch) return;
+    cancelUpload();
+    if (upload.base && upload.base !== candidate.base) {
+      upload.key = requestKey();
+      upload.tried = false;
+      upload.result = null;
+      upload.message = "连接已切换，请重新上传所选文件。";
+    }
     api = candidate;
     connected = true;
     version = overview.version;
@@ -268,6 +279,7 @@ $("#connect-form").onsubmit = async (event) => {
     $("#connect-dialog").close();
     $("#notice").hidden = true;
     if (route !== "dag") render();
+    else paintUpload();
     await refresh();
   } catch (error) {
     $("#connect-error").textContent = error.message;
@@ -358,6 +370,7 @@ function parseRoute() {
 }
 window.addEventListener("hashchange", () => {
   if (route === "dag") {
+    cancelUpload();
     try {
       syncDraft();
     } catch (error) {
@@ -576,7 +589,7 @@ async function retryTask() {
     ))
   )
     return;
-  if (!retryKeys.has(id)) retryKeys.set(id, crypto.randomUUID());
+  if (!retryKeys.has(id)) retryKeys.set(id, requestKey());
   const result = await client.post(
     `/v1/tasks/${id}/retry`,
     {},
@@ -705,6 +718,7 @@ function renderDetail() {
         { class: "actions" },
         button("复制到编排器", () => {
           draft = structuredClone(task.spec);
+          resetUpload();
           selected = draft.steps[0].id;
           validation = "";
           submitIdentity = null;
@@ -946,6 +960,13 @@ function formField(key, label, type = "text", span = false) {
       "aria-label": label,
       value: draft[key],
       type,
+      ...(key === "input_path" ? { onchange: (event) => {
+        if (upload.file && event.target.value !== upload.result?.input_path) {
+          resetUpload();
+          $("#input-checksum").value = "";
+          delete draft.input_sha256;
+        }
+      } } : {}),
       ...(type === "number"
         ? {
             step: key === "timeout" || key === "retry_delay" ? "any" : "1",
@@ -954,6 +975,157 @@ function formField(key, label, type = "text", span = false) {
         : {}),
     }),
   );
+}
+function fileSize(value) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
+}
+function pendingUpload() {
+  return !!uploadOperation || (!!upload.file && !upload.result);
+}
+function paintUpload() {
+  const status = $("#upload-status");
+  if (!status) return;
+  status.textContent = upload.message;
+  $("#upload-progress").value = Math.round(upload.fraction * 100);
+  $("#upload-progress").hidden = !upload.file;
+  $("#upload-start").disabled = !connected || !upload.file || !!uploadOperation || !!upload.result;
+  $("#upload-file").disabled = !!uploadOperation || submitting;
+  $("#upload-cancel").hidden = !uploadOperation;
+  $("#upload-clear").hidden = !upload.file || !!uploadOperation;
+  $("#submit-dag").disabled = submitting || pendingUpload();
+}
+function cancelUpload() {
+  if (!uploadOperation) return;
+  const operation = uploadOperation;
+  uploadOperation = null;
+  operation.controller.abort();
+  upload.message = "上传已取消，可重试或清除所选文件。";
+  paintUpload();
+}
+function resetUpload() {
+  cancelUpload();
+  upload = { file: null, result: null, message: "选择本地文件，上传成功后自动填入任务输入。", fraction: 0 };
+  const input = $("#upload-file");
+  if (input) input.value = "";
+  paintUpload();
+}
+function renderUpload() {
+  const input = h("input", {
+    id: "upload-file",
+    type: "file",
+    disabled: !!uploadOperation || submitting,
+    onchange: (event) => {
+      const file = event.target.files[0];
+      if (!file) return resetUpload();
+      upload = {
+        file, key: requestKey(), result: null, fraction: 0,
+        message: `待上传：${file.name} · ${fileSize(file.size)}`,
+      };
+      paintUpload();
+    },
+  });
+  if (upload.file) {
+    const selection = new DataTransfer();
+    selection.items.add(upload.file);
+    input.files = selection.files;
+  }
+  return h("div", { class: "file-upload" },
+    h("label", {}, "本地输入文件", input),
+    h("div", { class: "actions" },
+      h("button", {
+        type: "button", id: "upload-start", onclick: () => void startUpload(),
+        disabled: !connected || !upload.file || !!uploadOperation || !!upload.result,
+      }, "上传文件"),
+      h("button", {
+        type: "button", id: "upload-cancel", class: "ghost",
+        onclick: cancelUpload, hidden: !uploadOperation,
+      }, "取消上传"),
+      h("button", {
+        type: "button", id: "upload-clear", class: "ghost",
+        onclick: resetUpload, hidden: !upload.file || !!uploadOperation,
+      }, "清除所选文件"),
+    ),
+    h("progress", {
+      id: "upload-progress", max: 100, value: Math.round(upload.fraction * 100),
+      "aria-label": "文件上传进度", hidden: !upload.file,
+    }),
+    h("p", { id: "upload-status", role: "status", class: "hint" }, upload.message),
+  );
+}
+async function startUpload() {
+  if (submitting || uploadOperation || !upload.file) return;
+  const operation = { controller: new AbortController(), file: upload.file, key: upload.key };
+  uploadOperation = operation;
+  upload.message = "正在检查上传限制…";
+  paintUpload();
+  try {
+    const client = needAPI();
+    upload.base = client.base;
+    const limits = await client.request("/v1/files/limits");
+    if (uploadOperation !== operation) return;
+    if (!limits.enabled) throw new Error("管控服务已关闭文件上传，可使用已有共享文件路径。");
+    if (operation.file.size > limits.max_bytes)
+      throw new Error(`文件超过上传上限 ${fileSize(limits.max_bytes)}，请调整管控配置或使用共享文件。`);
+    let result;
+    if (upload.tried) {
+      try { result = await client.request("/v1/files", { key: operation.key }); }
+      catch (error) { if (error.status !== 404) throw error; }
+    }
+    if (uploadOperation !== operation) return;
+    if (!result) {
+      upload.tried = true;
+      upload.message = `正在上传：${operation.file.name} · 0%`;
+      paintUpload();
+      try {
+        result = await client.upload(operation.file, {
+          key: operation.key,
+          signal: operation.controller.signal,
+          timeout: limits.timeout_seconds * 1000 + 30000,
+          onProgress: (fraction) => {
+            if (uploadOperation !== operation) return;
+            upload.fraction = fraction;
+            upload.message = fraction >= 1
+              ? "文件已发送，正在确认保存…"
+              : `正在上传：${operation.file.name} · ${Math.round(fraction * 100)}%`;
+            paintUpload();
+          },
+        });
+      } catch (error) {
+        if (uploadOperation !== operation) return;
+        if (error.status === 0 || error.status >= 500 || error.status === 409) {
+          try { result = await client.request("/v1/files", { key: operation.key }); }
+          catch { throw error; }
+        } else throw error;
+      }
+    }
+    if (uploadOperation !== operation || api !== client) return;
+    upload.result = result;
+    upload.fraction = 1;
+    upload.message = `上传完成：${result.filename} · ${fileSize(result.size_bytes)}`;
+    draft.input_path = result.input_path;
+    draft.input_sha256 = result.input_sha256;
+    $('[data-field="input_path"]').value = result.input_path;
+    $("#input-checksum").value = result.input_sha256;
+    validation = "";
+    $("#validation")?.remove();
+    submitIdentity = null;
+    notify("文件已上传，可继续编排并提交任务。", true);
+  } catch (error) {
+    if (uploadOperation !== operation) return;
+    upload.message = error.message;
+    if (error.status === 401) {
+      connected = false;
+      connectionUI();
+    }
+    notify(error.message);
+  } finally {
+    if (uploadOperation === operation) {
+      uploadOperation = null;
+      paintUpload();
+    }
+  }
 }
 async function validateDraft() {
   syncDraft();
@@ -977,6 +1149,7 @@ async function importDraft(file) {
     JSON.parse(await file.text()),
   );
   draft = result.spec;
+  resetUpload();
   selected = draft.steps[0].id;
   validation = "配置已导入并通过 API 校验";
   submitIdentity = null;
@@ -984,12 +1157,14 @@ async function importDraft(file) {
 }
 async function submitDraft() {
   if (submitting) return;
+  if (pendingUpload()) throw new Error("请先完成文件上传，或清除所选文件后使用共享路径。");
   submitting = true;
   try {
     const spec = await validateDraft(),
       payload = JSON.stringify(spec);
+    if (pendingUpload()) throw new Error("文件选择已更改，请先完成上传。");
     if (submitIdentity?.payload !== payload)
-      submitIdentity = { payload, key: crypto.randomUUID() };
+      submitIdentity = { payload, key: requestKey() };
     const result = await needAPI().post("/v1/tasks", spec, submitIdentity.key);
     // An acknowledged operation is complete; a later explicit submission is new work.
     submitIdentity = null;
@@ -998,7 +1173,8 @@ async function submitDraft() {
   } finally {
     submitting = false;
     const submitButton = $("#submit-dag");
-    if (submitButton) submitButton.disabled = false;
+    if (submitButton) submitButton.disabled = pendingUpload();
+    paintUpload();
   }
 }
 
@@ -1007,6 +1183,7 @@ function renderDAG() {
     draft.steps.find((s) => s.id === selected) || draft.steps[0];
   selected = selectedStep.id;
   const importInput = h("input", {
+    id: "dag-import",
     type: "file",
     accept: ".json,application/json",
     hidden: true,
@@ -1198,11 +1375,12 @@ function renderDAG() {
         "div",
         {},
         fields,
+        renderUpload(),
         extra,
         h(
           "p",
           { class: "hint" },
-          "输入文件须已存在于所有 Pod 共享的目录中；此处提交文件路径。算子代码需预先安装到执行器镜像。",
+          "可上传本地文件，也可填写已有共享文件路径。上传成功后自动填写路径和校验和。算子代码需预先安装到执行器镜像。",
         ),
       ),
     ),
@@ -1226,7 +1404,7 @@ function renderDAG() {
     validation = "";
     $("#validation")?.remove();
   });
-  const submitButton = button("提交任务", submitDraft, "primary", submitting);
+  const submitButton = button("提交任务", submitDraft, "primary", submitting || pendingUpload());
   submitButton.id = "submit-dag";
   return [
     heading(
@@ -1267,6 +1445,7 @@ function renderDAG() {
           )
         ) {
           draft = template(version);
+          resetUpload();
           selected = draft.steps[0].id;
           validation = "";
           submitIdentity = null;

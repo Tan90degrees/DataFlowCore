@@ -56,7 +56,8 @@ export function createDevServer(apiUpstream = "http://127.0.0.1:8080") {
         incoming.on("error", () => response.destroy());
         incoming.pipe(response);
       });
-      proxy.setTimeout(30000, () => proxy.destroy(new Error("API upstream timeout")));
+      proxy.setTimeout(path === "/api/v1/files" && request.method === "POST" ? 86400000 : 30000,
+        () => proxy.destroy(new Error("API upstream timeout")));
       proxy.on("error", () => {
         if (response.headersSent) return response.destroy();
         response.writeHead(502, { "Content-Type": "application/json; charset=utf-8" });
@@ -93,6 +94,8 @@ export function createDevServer(apiUpstream = "http://127.0.0.1:8080") {
       response.end("Cannot read frontend asset");
     }
   });
+  // Upload deadlines belong to the control API; preserve its configurable total timeout.
+  server.requestTimeout = 86400000;
   return server;
 }
 

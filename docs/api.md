@@ -1,10 +1,15 @@
 # API
 
+文件上传的字节协议、响应与恢复语义见 [file-uploads.md](file-uploads.md)。
+
 管理员接口使用Authorization Bearer admin-token，执行器接口使用独立worker-token。
 GET /healthz、/readyz、/version为公开探针；/metrics使用管理员认证。
 
 | 方法 | 路径 | 功能 |
 |---|---|---|
+| POST | /v1/files?filename=... | 上传原始文件字节，必须有管理鉴权、Content-Length 和 Idempotency-Key |
+| GET | /v1/files | 携带原 Idempotency-Key 查询已完成上传 |
+| GET | /v1/files/limits | 查询上传大小、并发及超时限制 |
 | POST | /v1/tasks | 提交单文件TaskSpec，必须有Idempotency-Key |
 | GET | /v1/tasks | 游标分页，支持状态/池过滤 |
 | POST | /v1/tasks/status | 批量状态摘要，每次1..100个ID |
@@ -26,7 +31,7 @@ GET /healthz、/readyz、/version为公开探针；/metrics使用管理员认证
 完成/续租字段为tid、aid、session_id、token。领取返回assignment包含task_id、
 attempt_id、number、token、完整spec和lease_seconds。续租返回cancel及lease_seconds。
 过期/身份错误/冲突返回409，未知记录404，校验400，认证401，临时数据库故障503。
-成功接口统一200。单步骤JSON256KiB、完成请求1MB、进度256KiB，大结果写文件并返回引用。
+新文件上传成功返回201，同键重传返回200；其他成功接口返回200。单步骤JSON256KiB、完成请求1MB、进度256KiB，大结果写文件并返回引用。
 运行中task.log在执行器现场，保留最后16KiB；API进度中的log_tail同时持久化。
 完成后本地工作目录清理，不保留每个业务项的单独事件。
 

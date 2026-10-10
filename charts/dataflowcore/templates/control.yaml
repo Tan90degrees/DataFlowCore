@@ -26,6 +26,12 @@ spec:
           args: [control, --host, "0.0.0.0", --data-root, /dataflow, --lease, "{{ .Values.leaseSeconds }}"]
           ports: [{name: http, containerPort: 8080}]
           env:
+            - name: DATAFLOW_UPLOAD_MAX_BYTES
+              value: {{ .Values.control.uploadMaxBytes | int64 | quote }}
+            - name: DATAFLOW_UPLOAD_CONCURRENCY
+              value: {{ .Values.control.uploadConcurrency | quote }}
+            - name: DATAFLOW_UPLOAD_TIMEOUT
+              value: {{ .Values.control.uploadTimeout | quote }}
             - name: DATAFLOW_CORS_ORIGINS
               value: {{ join "," .Values.corsOrigins | quote }}
             - name: DATAFLOW_DATABASE_URL
@@ -56,7 +62,9 @@ spec:
             readOnlyRootFilesystem: true
             capabilities: {drop: [ALL]}
           volumeMounts:
-            - {name: data, mountPath: /dataflow, readOnly: true}
+            - name: data
+              mountPath: /dataflow
+              readOnly: {{ eq (int64 .Values.control.uploadMaxBytes) (int64 0) }}
             - {name: tmp, mountPath: /tmp}
       volumes:
         - name: data

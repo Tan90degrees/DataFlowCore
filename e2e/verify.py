@@ -6,7 +6,9 @@ import os
 import sqlite3
 import subprocess
 import time
+import urllib.request
 from pathlib import Path
+from urllib.parse import urlencode
 
 from dataflowcore.client import APIError, Client
 from dataflowcore.examples.ingestion import fixture_vector, pipeline, records
@@ -45,7 +47,12 @@ def submit(seconds):
             "document_id": f"k8s-business-{seconds}",
         },
     )
-    return client.submit(flow.spec("/dataflow/input.txt"))
+    return client.submit(
+        {
+            **flow.spec(uploaded["input_path"]),
+            "input_sha256": uploaded["input_sha256"],
+        }
+    )
 
 
 def verify_business(task):
@@ -69,6 +76,21 @@ def verify_business(task):
 until(lambda: client.request("GET", "/readyz"))
 until(lambda: len([w for w in client.request("GET", "/v1/workers")["workers"] if w["online"]]) >= 2)
 evidence = {}
+upload_key = "k8s-uploaded-business-file"
+upload_request = urllib.request.Request(
+    client.url + "/v1/files?" + urlencode({"filename": "业务输入.txt"}),
+    (Path(".e2e/data") / "input.txt").read_bytes(),
+    {
+        "Authorization": "Bearer " + os.environ["DATAFLOW_ADMIN_TOKEN"],
+        "Content-Type": "application/octet-stream",
+        "Idempotency-Key": upload_key,
+    },
+    method="POST",
+)
+with urllib.request.urlopen(upload_request, timeout=10) as response:
+    assert response.status == 201
+    uploaded = json.load(response)
+evidence["uploaded_file"] = uploaded
 
 task = submit(8)
 running = state(task["id"], "RUNNING")
@@ -106,6 +128,8 @@ forward = subprocess.Popen(
 )
 try:
     client = Client("http://127.0.0.1:18081", os.environ["DATAFLOW_ADMIN_TOKEN"], timeout=3)
+    until(lambda: client.request("GET", "/readyz"))
+    assert client.request("GET", "/v1/files", key=upload_key) == uploaded
     finished = state(task["id"], "SUCCEEDED")
     verify_business(finished)
     evidence["control_restart"] = finished

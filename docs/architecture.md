@@ -42,6 +42,8 @@ Attempt为追加记录，终态为SUCCEEDED、FAILED、CANCELLED或LOST。
 
 ## 输入与输出
 
+支持管理 API 上传本地文件到共享 data-root。文件与上传记录通过同一次目录重命名发布，临时文件不会作为任务输入；上传不创建任务，也不改变单文件、单执行器的执行方式。上传记录位于输入卷，执行记录仍在 PostgreSQL，见 [file-uploads.md](file-uploads.md)。
+
 管控提交时流式计算SHA256，任务开始和结束核对输入未变化。输入必须位于data-root
 且在任务生命周期内保留。输出写 outputs/<task-id>/<attempt-id>/ 独立目录，
 Task.result的已提交manifest引用是正式结果。消费者不能通过扫描输出目录判断成功。

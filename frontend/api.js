@@ -5,6 +5,12 @@ export class APIError extends Error {
   }
 }
 
+// getRandomValues also works on remote HTTP development origins.
+export function requestKey() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)),
+    (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
 export function normalizeBase(value) {
   const base = value.trim().replace(/\/+$/, "");
   if (base.startsWith("/") && !base.startsWith("//") && !/[?#]/.test(base))
@@ -59,5 +65,42 @@ export class API {
   }
   post(path, body = {}, key) {
     return this.request(path, { method: "POST", body, key });
+  }
+  upload(file, { key, signal, onProgress = () => {}, timeout = 330000 }) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const abort = () => xhr.abort();
+      const finish = (error, value) => {
+        signal?.removeEventListener("abort", abort);
+        if (error) reject(error);
+        else resolve(value);
+      };
+      xhr.upload.onprogress = (event) =>
+        onProgress(event.lengthComputable && event.total > 0 ? event.loaded / event.total : 0);
+      xhr.open("POST", this.base + "/v1/files?filename=" + encodeURIComponent(file.name));
+      xhr.setRequestHeader("Authorization", `Bearer ${this.token}`);
+      xhr.setRequestHeader("Content-Type", "application/octet-stream");
+      xhr.setRequestHeader("Idempotency-Key", key);
+      xhr.responseType = "json";
+      xhr.timeout = timeout;
+      xhr.withCredentials = false;
+      xhr.onload = () => {
+        const result = xhr.response;
+        if (xhr.status < 200 || xhr.status >= 300)
+          finish(new APIError(result?.error || `HTTP ${xhr.status}`, xhr.status));
+        else if (!result?.input_path || !result?.input_sha256)
+          finish(new APIError("上传响应无效，可重试确认文件是否已保存。"));
+        else finish(null, result);
+      };
+      xhr.onerror = () => finish(new APIError("上传连接中断，可重试确认文件是否已保存。"));
+      xhr.ontimeout = () => finish(new APIError("上传超时，可重试整个文件。"));
+      xhr.onabort = () => finish(new APIError("上传已取消。", -1));
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) {
+        finish(new APIError("上传已取消。", -1));
+        return;
+      }
+      xhr.send(file);
+    });
   }
 }
