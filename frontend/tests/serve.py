@@ -1,12 +1,10 @@
-"""A separate static origin, real controller and real free-threaded executor."""
+"""A Node dev proxy, real controller and real free-threaded executor."""
 
-import functools
 import os
 import signal
 import subprocess
 import sys
 import time
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from dataflowcore.client import APIError, Client
@@ -95,10 +93,19 @@ launch(
     "--stop-grace",
     "0.2",
 )
-server = ThreadingHTTPServer(
-    ("127.0.0.1", 8000),
-    functools.partial(SimpleHTTPRequestHandler, directory=str(repo / "frontend")),
+server = subprocess.Popen(
+    [
+        "node",
+        str(repo / "frontend/dev-server.mjs"),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
+        "--api-upstream",
+        client.url,
+    ]
 )
+processes.append(server)
 
 
 def stop(*_):
@@ -108,11 +115,12 @@ def stop(*_):
 signal.signal(signal.SIGTERM, stop)
 signal.signal(signal.SIGINT, stop)
 try:
-    server.serve_forever(poll_interval=0.1)
+    while server.poll() is None:
+        time.sleep(0.1)
+    raise RuntimeError("frontend dev server exited unexpectedly")
 except KeyboardInterrupt:
     pass
 finally:
-    server.server_close()
     for process in reversed(processes):
         process.terminate()
         try:

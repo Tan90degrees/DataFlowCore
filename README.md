@@ -183,3 +183,7 @@ bash e2e/run.sh
 `docker compose up --build -d` 后打开 **http://127.0.0.1:8081**，连接地址使用 `/api`，输入 `.env` 中的管理令牌。Kubernetes 可设置 `console.enabled=true` 启用独立前端 Deployment/Service。
 
 详见 [前端部署、功能边界与浏览器验收](docs/console.md)。
+
+开发启动（Node.js 20+）：`npm run dev --prefix frontend`。默认监听 `0.0.0.0:8000`，
+浏览器访问本机或服务器 IP 的 8000 端口，页面 API 地址使用 `/api`。开发服务器将请求
+转发到本机 `127.0.0.1:8080`；其他管控地址用 `--api-upstream` 指定。需分别启动管控与执行器。

@@ -13,18 +13,65 @@ docker compose up --build -d
 
 点击「配置 API 连接」，地址使用默认 `/api`，输入 `.env` 中的 `DATAFLOW_ADMIN_TOKEN`。独立 Nginx 将 `/api/*` 转发给 `control:8080`，仍由后端校验 Bearer token。令牌不写入静态文件、URL、localStorage 或 sessionStorage，刷新页面需重新输入。浏览器只保存 API 地址，以及用户主动保存的 DAG 草稿。
 
-开发时无需打包：
+开发时使用 Node.js 20 或更高版本，无需 Python 静态服务器、打包或安装 npm 依赖。
+先启动已有管控 API，再启动独立前端：
 
 ```bash
-# 管控节点允许这个确切的前端来源
-DATAFLOW_CORS_ORIGINS=http://127.0.0.1:8000 dataflow control \
+# 管控节点和执行器仍需 Python 3.14t、凭据及共享目录
+dataflow control \
   --host 127.0.0.1 --data-root /absolute/shared/data
 # 另一终端
 cd frontend
-python3 -m http.server 8000 --bind 127.0.0.1
+npm run dev
 ```
 
-打开 `http://127.0.0.1:8000`，连接 `http://127.0.0.1:8080`。`localhost` 和 `127.0.0.1` 是不同来源，需要与配置严格匹配。生产通过 HTTPS 暴露前端和 API；HTTPS 页面应连接 HTTPS API。
+本机打开 `http://127.0.0.1:8000`；前端启动在服务器上时，另一台电脑打开
+`http://服务器IP:8000`。默认监听 `0.0.0.0:8000`，前端 `/api` 转发到启动机器上的
+`http://127.0.0.1:8080`。页面点击「配置 API 连接」，地址填写 **`/api`**，令牌填写
+`DATAFLOW_ADMIN_TOKEN`。服务器防火墙/安全组需允许你的客户端访问 8000。
+代理保留 Authorization 和 Idempotency-Key，后端继续验证鉴权；同源代理无需配置 CORS。
+
+管控 API 在其他端口或机器时显式指定：
+
+```bash
+npm run dev -- --host 0.0.0.0 --port 8000 --api-upstream http://127.0.0.1:18080
+```
+
+`--host`、`--port`、`--api-upstream` 的环境变量分别为 `DATAFLOW_DEV_HOST`、
+`DATAFLOW_DEV_PORT`、`DATAFLOW_API_UPSTREAM`，命令行优先。只允许本机访问可用
+`--host 127.0.0.1`。开发服务器只提供页面资产及 API 代理，不启动管控、执行器或数据库。
+它仅用于开发；正式部署继续使用独立 Nginx 镜像，通过 HTTPS 暴露前端和 API。
+
+启动后应持续占用终端并显示监听地址，按 Ctrl+C 停止。SSH 断开后仍要运行可用：
+
+```bash
+nohup npm run dev -- --api-upstream http://127.0.0.1:8080 > dataflow-console.log 2>&1 &
+```
+
+## 启动与访问排查
+
+旧版 `npm run dev` 调用 Python 静态服务器，绑定 `127.0.0.1` 只能本机访问，
+且不提供默认 `/api` 代理。更新仓库后使用新的 Node 启动命令。
+旧命令立即退出时，仅 npm 打印的调用行不足以判断原因，需要查看后续 stderr 和退出码。
+新版前端不依赖 `python3`，启动失败返回非零退出码和明确提示。
+
+Linux 服务器可先在启动机器执行：
+
+```bash
+node --version
+curl -I http://127.0.0.1:8000/
+curl -sS http://127.0.0.1:8000/api/readyz
+ss -lntp 'sport = :8000'
+```
+
+- 页面请求失败：检查进程和启动日志。端口冲突可改 `--port 8001`。
+- 本机页面成功而远程失败：使用服务器 IP，核对监听地址、防火墙和安全组。
+- `/api/readyz` 返回 502：前端已启动，检查管控是否启动以及 `--api-upstream` 地址。
+- 连接时报 401：使用管理令牌，不能用执行器令牌；令牌不写入 URL 或 config.js。
+- 直接连接其他域的 API：使用实际 API 地址，并配置后端精确 CORS 来源。
+
+`localhost` 和 `127.0.0.1` 是不同来源，直接跨域连接时需要与配置严格匹配。
+HTTPS 页面应连接 HTTPS API。
 
 `frontend/config.js` 设置默认 API 地址及轮询间隔，可在部署时独立替换，无需改 Python 服务。默认地址 `/api`、轮询 5 秒；间隔最小 2 秒。不得把令牌写入这个公开配置文件。
 
@@ -83,11 +130,12 @@ python -m pip install -e '.[dev]'
 pytest -q tests/test_console_api.py
 cd frontend
 npm ci
+npm run test:dev
 npx playwright install --with-deps chromium
 DATAFLOW_TEST_PYTHON=python npm test
 ```
 
-浏览器测试启动一个独立静态 HTTP 来源、真实管控节点和真实 free-threaded 执行器，通过实际 CORS 请求执行。覆盖鉴权失败、筛选/分页、节点编辑与环拒绝、草稿/导出、文件 DAG 执行、六节点文档入库、响应丢失的幂等提交、运行中取消、重试、失败日志、XSS 字符串安全渲染、排空、移动端及网络异常/令牌失效。测试中只有故障注入拦截请求；成功业务响应来自真实 API。
+浏览器测试启动独立 Node 开发服务器、真实管控节点和真实 free-threaded 执行器，覆盖实际 CORS 连接及默认 `/api` 代理。覆盖鉴权失败、筛选/分页、节点编辑与环拒绝、草稿/导出、文件 DAG 执行、六节点文档入库、响应丢失的幂等提交、运行中取消、重试、失败日志、XSS 字符串安全渲染、排空、移动端及网络异常/令牌失效。测试中只有故障注入拦截请求；成功业务响应来自真实 API。Node 开发服务器测试另行验证静态资源、鉴权及请求体转发、后端不可达、端口冲突、进程持续运行和停止。
 
 CI 分别运行 Python/PostgreSQL 验证、浏览器验证和 Kubernetes 故障恢复验证，上传前端截图、失败 trace、浏览器报告。独立前端镜像构建与 K8S 前端 Service 的页面/API 代理验证也进入 CI。
 
