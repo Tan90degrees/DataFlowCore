@@ -25,6 +25,8 @@ worker:
   nodeSelector: {}
   tolerations: []
 control:
+  # Relative to /dataflow, or an absolute directory inside that shared volume.
+  uploadDir: uploads
   uploadMaxBytes: 268435456
   uploadConcurrency: 4
   uploadTimeout: 300

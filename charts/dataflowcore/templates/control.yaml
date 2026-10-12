@@ -26,6 +26,8 @@ spec:
           args: [control, --host, "0.0.0.0", --data-root, /dataflow, --lease, "{{ .Values.leaseSeconds }}"]
           ports: [{name: http, containerPort: 8080}]
           env:
+            - name: DATAFLOW_UPLOAD_DIR
+              value: {{ dig "uploadDir" "uploads" .Values.control | quote }}
             - name: DATAFLOW_UPLOAD_MAX_BYTES
               value: {{ .Values.control.uploadMaxBytes | int64 | quote }}
             - name: DATAFLOW_UPLOAD_CONCURRENCY

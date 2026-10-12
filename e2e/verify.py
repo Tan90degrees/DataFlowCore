@@ -90,6 +90,8 @@ upload_request = urllib.request.Request(
 with urllib.request.urlopen(upload_request, timeout=10) as response:
     assert response.status == 201
     uploaded = json.load(response)
+assert client.request("GET", "/v1/files/limits")["upload_dir"] == "/dataflow/inputs/incoming"
+assert Path(uploaded["input_path"]).is_relative_to("/dataflow/inputs/incoming")
 evidence["uploaded_file"] = uploaded
 
 task = submit(8)

@@ -10,6 +10,7 @@ from pathlib import Path
 from . import __version__
 from .client import Client
 from .runtime import child_main, require_free_threading
+from .uploads import DEFAULT_DIR
 
 
 def parser():
@@ -23,6 +24,11 @@ def parser():
     control.add_argument("--host", default="127.0.0.1")
     control.add_argument("--port", type=int, default=8080)
     control.add_argument("--data-root", default=os.getenv("DATAFLOW_DATA_ROOT", "."))
+    control.add_argument(
+        "--upload-dir",
+        default=os.getenv("DATAFLOW_UPLOAD_DIR", DEFAULT_DIR),
+        help="upload directory relative to data-root, or an absolute path inside it",
+    )
     control.add_argument("--lease", type=float, default=30)
     control.add_argument(
         "--upload-max-bytes",
@@ -118,6 +124,7 @@ def main():
             upload_max_bytes=args.upload_max_bytes,
             upload_concurrency=args.upload_concurrency,
             upload_timeout=args.upload_timeout,
+            upload_dir=args.upload_dir,
         )
     elif args.command == "worker":
         from .worker import Worker

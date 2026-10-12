@@ -2,6 +2,8 @@
 
 文件上传的字节协议、响应与恢复语义见 [file-uploads.md](file-uploads.md)。
 
+`GET /v1/files/limits` 同时返回解析后的绝对 `upload_dir`。目录由管控启动时的 `--upload-dir`/`DATAFLOW_UPLOAD_DIR` 指定（默认 data-root 下的 `uploads`），POST 上传沿用此配置。
+
 管理员接口使用Authorization Bearer admin-token，执行器接口使用独立worker-token。
 GET /healthz、/readyz、/version为公开探针；/metrics使用管理员认证。
 

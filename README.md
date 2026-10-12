@@ -189,3 +189,5 @@ bash e2e/run.sh
 转发到本机 `127.0.0.1:8080`；其他管控地址用 `--api-upstream` 指定。需分别启动管控与执行器。
 
 DAG 编排页支持本地文件上传，成功后自动填写任务输入路径与 SHA256，显示进度并支持取消。默认上限 256 MiB，可通过管控配置调整；同时更新并重启管控与前端，部署/恢复说明见 [文件上传](docs/file-uploads.md)。
+
+上传目录可通过管控 `--upload-dir`、`DATAFLOW_UPLOAD_DIR` 或 Helm `control.uploadDir` 指定。默认 `uploads`，相对于共享 `--data-root`；也支持该范围内的绝对路径，例如 `--data-root /srv/dataflow --upload-dir /srv/dataflow/incoming`。前端自动使用配置后的路径。

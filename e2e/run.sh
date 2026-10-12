@@ -37,6 +37,7 @@ kubectl create secret generic dataflowcore-secrets \
 helm upgrade --install dataflowcore charts/dataflowcore \
   --set image.repository=dataflowcore --set image.tag=e2e \
   --set console.enabled=true --set console.image.repository=dataflowcore-console --set console.image.tag=e2e \
+  --set-string control.uploadDir=inputs/incoming \
   --set leaseSeconds=10 --set worker.interval=1 --set worker.stopGrace=1 \
   --set worker.resources.requests.cpu=200m --set worker.resources.requests.memory=256Mi \
   --wait --timeout=240s

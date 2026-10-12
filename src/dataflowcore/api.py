@@ -12,7 +12,7 @@ from . import __version__
 from .contracts import Conflict, Invalid, Missing, TaskSpec, integer
 from .runtime import under_root
 from .store import Store
-from .uploads import DEFAULT_MAX_BYTES, UploadError, Uploads
+from .uploads import DEFAULT_DIR, DEFAULT_MAX_BYTES, UploadError, Uploads
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ class Server(ThreadingHTTPServer):
         upload_max_bytes=DEFAULT_MAX_BYTES,
         upload_concurrency=4,
         upload_timeout=300,
+        upload_dir=DEFAULT_DIR,
     ):
         if not insecure and (
             len(admin_token) < 24 or len(worker_token) < 24 or admin_token == worker_token
@@ -60,7 +61,13 @@ class Server(ThreadingHTTPServer):
         self.slots = threading.BoundedSemaphore(64)
         super().__init__(address, Handler)
         try:
-            self.uploads = Uploads(data_root, upload_max_bytes, upload_concurrency, upload_timeout)
+            self.uploads = Uploads(
+                data_root,
+                upload_max_bytes,
+                upload_concurrency,
+                upload_timeout,
+                upload_dir=upload_dir,
+            )
         except BaseException:
             self.server_close()
             raise
@@ -357,6 +364,7 @@ def serve(
     upload_max_bytes=DEFAULT_MAX_BYTES,
     upload_concurrency=4,
     upload_timeout=300,
+    upload_dir=DEFAULT_DIR,
 ):
     store = Store(dsn, lease)
     store.migrate()
@@ -371,6 +379,7 @@ def serve(
         upload_max_bytes=upload_max_bytes,
         upload_concurrency=upload_concurrency,
         upload_timeout=upload_timeout,
+        upload_dir=upload_dir,
     )
     import signal
 
