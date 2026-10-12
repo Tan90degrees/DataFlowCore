@@ -54,3 +54,5 @@ helm upgrade dataflowcore charts/dataflowcore --reuse-values --set worker.replic
 启用前端上传时管控也需要共享卷写权限；新 Chart 已在 `control.uploadMaxBytes>0` 时启用，设为 0 时恢复只读。Docker Compose 的管控挂载同样已改为可写。前端本身不挂载共享卷，只代理管理 API。
 
 可设置 `control.uploadMaxBytes=1073741824` 与 `control.uploadTimeout=900` 允许最多 1 GiB、900 秒的接收；默认 256 MiB、300 秒、4 个同时上传。外部 Ingress/网关也需同步体积与超时限制。配置、记录备份与清理边界见 [file-uploads.md](file-uploads.md)。
+
+上传目录默认 `/dataflow/uploads`，可通过 `--set-string control.uploadDir=inputs/incoming` 改为 `/dataflow/inputs/incoming`，也可直接填写该范围内的绝对路径。Compose 在 `.env` 设置 `DATAFLOW_UPLOAD_DIR=inputs/incoming`，对应宿主机 `./data/inputs/incoming`。该目录必须在原共享 data-root 内；执行器沿用相同挂载，无需单独设置上传目录。修改后重启管控，原目录的文件保留且不会自动迁移。

@@ -52,7 +52,7 @@ class Cluster:
         self.processes.append((process, log))
         return process
 
-    def start_control(self):
+    def start_control(self, *extra):
         process = self.launch(
             "control",
             "--dsn",
@@ -63,6 +63,7 @@ class Cluster:
             str(self.root),
             "--lease",
             "3",
+            *extra,
         )
         until(lambda: self.client.request("GET", "/readyz"))
         return process

@@ -132,6 +132,7 @@ def test_limits_framing_and_disabled_uploads(upload_api, tmp_path):
         "max_bytes": 4 * 1024 * 1024,
         "max_concurrent": 1,
         "timeout_seconds": 30,
+        "upload_dir": str(tmp_path / "uploads"),
     }
     for lengths, transfer, status in [
         ([], None, 411),
@@ -246,10 +247,71 @@ def test_upload_directory_must_stay_inside_data_root(tmp_path):
     assert not list(outside.iterdir())
 
 
-def test_uploaded_file_executes_on_real_worker_and_survives_controller_restart(cluster):
+@pytest.mark.parametrize("directory", ["../outside", "", " ", "\x00", 42, None])
+def test_invalid_configured_directory_is_rejected_before_writing(tmp_path, directory):
+    root = tmp_path / "data"
+    with pytest.raises(Invalid):
+        Uploads(root, upload_dir=directory)
+    assert not root.exists()
+    assert not (tmp_path / "outside").exists()
+
+
+def test_absolute_and_symlink_configured_directories_cannot_escape_data_root(tmp_path):
+    root, outside = tmp_path / "data", tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (root / "incoming").symlink_to(outside, target_is_directory=True)
+    for directory in (outside, "incoming"):
+        with pytest.raises(Invalid):
+            Uploads(root, upload_dir=directory)
+    assert not list(outside.iterdir())
+
+
+def test_changing_upload_directory_preserves_completed_files(upload_api, tmp_path):
+    status, previous = request(upload_api)
+    assert status == 201
+    original = upload_api.uploads
+    upload_api.uploads = Uploads(tmp_path, upload_dir="incoming/files")
+    assert request(upload_api, method="GET", path="/v1/files")[0] == 404
+    status, current = request(upload_api, key="new-directory", data=b"new input")
+    assert status == 201
+    assert Path(current["input_path"]).is_relative_to(tmp_path / "incoming" / "files")
+    assert Path(previous["input_path"]).read_bytes() == b"hello"
+    assert original.get("upload-key") == previous
+    assert (
+        Uploads(tmp_path, upload_dir=tmp_path / "incoming" / "files").get("new-directory")
+        == current
+    )
+    # Disabling uploads neither creates a new directory nor changes old files.
+    unused = tmp_path / "unused"
+    Uploads(tmp_path, max_bytes=0, upload_dir=unused)
+    assert not unused.exists()
+    assert Path(previous["input_path"]).read_bytes() == b"hello"
+
+
+@pytest.mark.parametrize("directory_source", ["default", "cli", "env"])
+def test_uploaded_file_executes_on_real_worker_and_survives_controller_restart(
+    cluster, directory_source
+):
+    control_args = []
+    upload_root = cluster.root / "uploads"
+    if directory_source != "default":
+        cluster.control.kill()
+        cluster.control.wait(timeout=5)
+        upload_root = cluster.root / "业务输入" / "待处理"
+        if directory_source == "cli":
+            # Explicit CLI configuration takes precedence over the environment.
+            cluster.env["DATAFLOW_UPLOAD_DIR"] = "ignored"
+            control_args = ["--upload-dir", str(upload_root)]
+        else:
+            cluster.env["DATAFLOW_UPLOAD_DIR"] = "业务输入/待处理"
+        cluster.control = cluster.start_control(*control_args)
+    limits = request(cluster, method="GET", path="/v1/files/limits")[1]
+    assert limits["upload_dir"] == str(upload_root)
     text = "上传后的真实文件 DataFlow hello world\n" * 100 + " " * (2 * 1024 * 1024)
     status, uploaded = request(cluster, data=text.encode(), key="business-upload")
     assert status == 201
+    assert Path(uploaded["input_path"]).is_relative_to(upload_root)
     task = cluster.client.submit(
         {
             "input_path": uploaded["input_path"],
@@ -276,6 +338,6 @@ def test_uploaded_file_executes_on_real_worker_and_survives_controller_restart(c
     assert finished["result"]["runtime"]["gil_enabled"] is False
     cluster.control.kill()
     cluster.control.wait(timeout=5)
-    cluster.control = cluster.start_control()
+    cluster.control = cluster.start_control(*control_args)
     assert request(cluster, method="GET", path="/v1/files", key="business-upload")[1] == uploaded
     assert cluster.client.get(task["id"])["state"] == "SUCCEEDED"

@@ -15,6 +15,7 @@ from .contracts import Conflict, Invalid, Missing, integer, number
 from .runtime import atomic_json, under_root
 
 DEFAULT_MAX_BYTES = 256 * 1024 * 1024
+DEFAULT_DIR = "uploads"
 CHUNK_BYTES = 1024 * 1024
 
 
@@ -56,12 +57,24 @@ class Uploads:
     survives controller restart without a database/filesystem dual-write window.
     """
 
-    def __init__(self, data_root, max_bytes=DEFAULT_MAX_BYTES, concurrency=4, timeout=300):
+    def __init__(
+        self,
+        data_root,
+        max_bytes=DEFAULT_MAX_BYTES,
+        concurrency=4,
+        timeout=300,
+        upload_dir=DEFAULT_DIR,
+    ):
         integer(max_bytes, "upload_max_bytes", 0, 1024**4)
         integer(concurrency, "upload_concurrency", 1, 32)
         number(timeout, "upload_timeout", 1, 86400)
         self.data_root = Path(data_root).resolve()
-        self.root = under_root(self.data_root / "uploads", self.data_root)
+        if not isinstance(upload_dir, (str, os.PathLike)):
+            raise Invalid("upload_dir must be a non-empty path inside data_root")
+        directory = os.fspath(upload_dir)
+        if not isinstance(directory, str) or not directory.strip() or "\x00" in directory:
+            raise Invalid("upload_dir must be a non-empty path inside data_root")
+        self.root = under_root(self.data_root / directory, self.data_root)
         self.staging = under_root(self.root / ".staging", self.root)
         self.max_bytes, self.concurrency, self.timeout = max_bytes, concurrency, timeout
         self.slots = threading.BoundedSemaphore(concurrency)
@@ -83,6 +96,7 @@ class Uploads:
             "max_bytes": self.max_bytes,
             "max_concurrent": self.concurrency,
             "timeout_seconds": self.timeout,
+            "upload_dir": str(self.root),
         }
 
     @staticmethod

@@ -8,6 +8,7 @@
 
 | 设置 | CLI | 环境变量 | Helm | 默认 |
 | --- | --- | --- | --- | --- |
+| 上传目录 | `--upload-dir` | `DATAFLOW_UPLOAD_DIR` | `control.uploadDir` | `uploads`，相对于 data-root |
 | 单文件最大字节数 | `--upload-max-bytes` | `DATAFLOW_UPLOAD_MAX_BYTES` | `control.uploadMaxBytes` | 268435456（256 MiB）；0 关闭上传 |
 | 同时接收文件数 | `--upload-concurrency` | `DATAFLOW_UPLOAD_CONCURRENCY` | `control.uploadConcurrency` | 4；可配置 1..32 |
 | 接收超时（秒） | `--upload-timeout` | `DATAFLOW_UPLOAD_TIMEOUT` | `control.uploadTimeout` | 300；可配置 1..86400 |
@@ -16,16 +17,25 @@ CLI 示例：
 
 ```bash
 dataflow control --data-root /absolute/shared/data \
+  --upload-dir incoming/documents \
   --upload-max-bytes 1073741824 --upload-timeout 900
 ```
 
 服务仍需要独立的管理/执行器令牌与原有数据库配置。Docker Compose 已把管控数据卷改为可写，可在 `.env` 配置以上环境变量，然后执行 `docker compose up --build -d`。宿主机共享目录需给容器 UID/GID 10001 写权限。
 
+上传目录由管控启动配置统一指定，CLI 优先于环境变量。相对路径相对于 `--data-root`，上述示例实际保存到 `/absolute/shared/data/incoming/documents/<id>/source/<文件名>`；也可直接填写绝对路径 `--upload-dir /absolute/shared/data/incoming/documents`。目录不存在时自动创建。空目录配置、越界路径和指向 data-root 外的符号链接会拒绝启动。执行器无需新增配置，前端会自动回填该目录下的实际输入路径；`GET /v1/files/limits` 的 `upload_dir` 可查询当前解析后的目录。
+
+上传目录必须在管控和所有执行器共同挂载的 data-root 范围内。原任务提交与执行器的路径检查继续有效。如果要换存储盘或宿主机目录，先把目标存储配置为所有节点共享的 data-root，再指定其中的上传目录；Docker/K8S 的配置填写容器内路径，宿主机路径由共享卷挂载决定。
+
+Compose 在 `.env` 设置 `DATAFLOW_UPLOAD_DIR=incoming/documents` 后，容器内文件位于 `/dataflow/incoming/documents/`，宿主机位于 `./data/incoming/documents/`。Helm 可设置 `--set-string control.uploadDir=inputs/incoming` 或容器内绝对路径 `/dataflow/inputs/incoming`，管控与执行器继续挂载同一 PVC。
+
+修改目录配置需重启管控，仅影响新上传和当前目录的上传记录查询；不会自动迁移或删除原目录的完整文件。已提交任务仍按原绝对路径读取，保留旧输入供运行和重试使用。若搬迁共享卷或改变 data-root 的绝对挂载路径，需要同时迁移文件与上传记录并处理旧任务的路径引用。
+
 Kubernetes 已在启用上传时将管控 PVC 挂载为可写；设置 `control.uploadMaxBytes=0` 时恢复只读挂载。通过 `helm upgrade --install` 更新镜像和 Chart。独立 Nginx 对上传接口关闭请求体缓存，由管控检查限制；其他 JSON API 仍保留原限制。使用外部 Ingress/网关时，也需同步其上传体积和超时设置。
 
 ## API
 
-- `GET /v1/files/limits`：管理鉴权，返回 `enabled`、`max_bytes`、`max_concurrent`、`timeout_seconds`。
+- `GET /v1/files/limits`：管理鉴权，返回 `enabled`、`max_bytes`、`max_concurrent`、`timeout_seconds`、解析后的绝对 `upload_dir`。
 - `POST /v1/files?filename=document.pdf`：管理鉴权，原始文件字节，`Content-Type: application/octet-stream`，必须有 `Content-Length` 和 `Idempotency-Key`。浏览器自动设置长度。文件名为不含路径分隔符或控制字符的 basename，最多 255 个 UTF-8 字节，保留原名和扩展名。
 - `GET /v1/files`：管理鉴权，携带原 `Idempotency-Key`，查询已完成的上传；尚未完成返回 404。可用于上传响应丢失后的确认，不是文件列表接口。
 
@@ -45,7 +55,7 @@ curl -sS -X POST "http://127.0.0.1:8080/v1/files?filename=document.pdf" \
 
 上传以不超过 1 MiB 的块写盘并计算 SHA256，不在管控内存中加载整个文件；同时上传默认最多 4 个，不持有任务数据库事务锁。默认最多 64 个 API 线程，上传准入之外的线程继续负责调度、心跳和观测。
 
-输入与 metadata.json 在临时目录写完并刷盘，通过一次目录重命名发布到 `data-root/uploads/<id>/`，源文件位于 `source/<原文件名>`，设为只读。上传记录和源文件一起持久化在共享卷，没有文件与数据库双写的发布窗口；任务及其执行记录继续存 PostgreSQL。
+输入与 metadata.json 在所配置上传目录的 `.staging/` 中写完并刷盘，通过一次目录重命名发布到 `<upload_dir>/<id>/`（默认 `data-root/uploads/<id>/`），源文件位于 `source/<原文件名>`，设为只读。临时与最终目录位于同一目录，保持原子发布。上传记录和源文件一起持久化在共享卷，没有文件与数据库双写的发布窗口；任务及其执行记录继续存 PostgreSQL。
 
 断开、失败、接收超时会清理本次临时目录；管控重启清理遗留临时目录，保留完整上传和记录。上传从头重传，不提供断点续传。前端显示传输进度，100% 后继续等待保存确认；可取消上传，离开编排页或断开 API 也会取消。
 
@@ -64,4 +74,4 @@ npm run test:dev
 DATAFLOW_TEST_PYTHON=python npm test
 ```
 
-验证包括超过 JSON 预算的二进制文件、中文文件名、越界路径拒绝、管理鉴权、长度/大小限制、并发准入、断开/超时/磁盘满清理、幂等确认、管控重启、真实 free-threaded 执行器的文件 DAG，以及浏览器上传后回填、保留未提交编辑和丢失响应确认。K8S 验收使用上传文件完成 Pod 故障恢复与管控重启，并通过生产 Nginx 上传超过 2 MiB 的文件并执行真实 DAG。
+验证包括超过 JSON 预算的二进制文件、中文文件名、上传目录的相对/绝对路径与 CLI/环境变量优先级、越界路径拒绝、管理鉴权、长度/大小限制、并发准入、断开/超时/磁盘满清理、幂等确认、管控重启、真实 free-threaded 执行器的文件 DAG，以及浏览器在指定目录上传后回填、保留未提交编辑和丢失响应确认。K8S 验收通过 Helm 指定上传目录，使用上传文件完成 Pod 故障恢复与管控重启，并通过生产 Nginx 上传超过 2 MiB 的文件并执行真实 DAG。

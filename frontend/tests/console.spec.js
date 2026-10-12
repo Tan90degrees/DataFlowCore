@@ -215,6 +215,7 @@ test("local upload through /api preserves edits, confirms lost response and exec
   await page.getByLabel("任务名称").click();
   expect(posts).toBe(1);
   expect(uploaded.input_sha256).toBe(createHash("sha256").update(payload).digest("hex"));
+  expect(uploaded.input_path.startsWith(path.join(path.dirname(input), "console-inputs") + path.sep)).toBe(true);
   await expect(page.getByLabel("共享文件绝对路径")).toHaveValue(uploaded.input_path);
   await expect(page.locator("#input-checksum")).toHaveValue(uploaded.input_sha256);
   await expect(page.locator("#task-parameters")).toHaveValue("{");
@@ -412,7 +413,8 @@ test("cancel a slow real upload and keep the task draft", async ({ page, request
     name: "取消上传.txt", mimeType: "text/plain", buffer: Buffer.alloc(2 * 1024 * 1024, 0x61),
   });
   await page.getByRole("button", { name: "上传文件", exact: true }).click();
-  const staging = path.join(path.dirname(input), "uploads", ".staging");
+  const limits = await (await request.get(base + "/v1/files/limits", { headers })).json();
+  const staging = path.join(limits.upload_dir, ".staging");
   await expect.poll(async () => {
     const dirs = await readdir(staging);
     if (!dirs.length) return 0;

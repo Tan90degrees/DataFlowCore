@@ -47,7 +47,8 @@ with urllib.request.urlopen(upload_request, timeout=15) as response:
     assert response.status == 201
     uploaded = json.load(response)
 assert uploaded["input_sha256"] == hashlib.sha256(payload).hexdigest()
-assert uploaded["input_path"].startswith("/dataflow/uploads/")
+upload_dir = client.request("GET", "/v1/files/limits")["upload_dir"]
+assert Path(uploaded["input_path"]).is_relative_to(upload_dir)
 assert client.request("GET", "/v1/files", key=upload_key) == uploaded
 task = client.submit(
     {
