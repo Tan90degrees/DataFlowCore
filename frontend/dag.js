@@ -1,10 +1,12 @@
-export function template(version = "0.3.0") {
+export function template(version = "0.4.0") {
   return {
     name: "文本词频统计",
     input_path: "/dataflow/input.txt",
     pool: "default",
     runtime_version: version,
     dag_workers: 2,
+    io_workers: 16,
+    scheduling: "operator",
     cpu: 1,
     memory_mb: 256,
     max_attempts: 3,
@@ -14,18 +16,24 @@ export function template(version = "0.3.0") {
     steps: [
       {
         id: "read",
+        workload: "io",
+        resources: { cpu: 0.1, memory_mb: 64 },
         callable: "dataflowcore.operators:read_text",
         depends_on: [],
         parameters: {},
       },
       {
         id: "count",
+        workload: "cpu",
+        resources: { cpu: 1, memory_mb: 64 },
         callable: "dataflowcore.operators:word_count",
         depends_on: ["read"],
         parameters: {},
       },
       {
         id: "write",
+        workload: "io",
+        resources: { cpu: 0.1, memory_mb: 32 },
         callable: "dataflowcore.operators:write_json",
         depends_on: ["count"],
         parameters: {},
@@ -130,7 +138,7 @@ export function graph(steps, { selected, progress = {}, onSelect } = {}) {
         step.callable.split(":").at(-1).slice(0, 25),
       ),
     );
-    node.append(svg("title", {}, `${step.id}\n${step.callable}\n${state}`));
+    node.append(svg("title", {}, `${step.id}\n${step.callable}\n${state}\n${step.workload || "cpu"} · CPU ${step.resources?.cpu ?? "默认"} · ${step.resources?.memory_mb ?? "默认"} MiB`));
     if (onSelect) {
       node.setAttribute("role", "button");
       node.setAttribute("tabindex", "0");

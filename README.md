@@ -14,6 +14,7 @@ Pod 或节点故障后自动从头重试，暂不支持断点续跑。没有 Ray
 - 自动整文件重试、管控重启恢复、旧执行结果隔离。
 - 排队取消、协作停止、超时进程组终止、Linux 父进程死亡保护。
 - 运行环境、执行器池、槽位与 CPU/内存预算匹配。
+- 算子级 CPU/内存准入，执行器内所有槽位共享预算；CPU/IO 算子与页块使用独立固定池。
 - 管控与执行器分别认证、输入校验和 SHA256 固定、输出 manifest。
 - Python 3.14t 容器、Docker Compose、Helm、真实子进程与 K8S 故障验收。
 - 流式有界的页/块线程并行、批量状态查询、游标分页、执行器排空。
@@ -110,9 +111,21 @@ from dataflowcore.operators import read_text, word_count, write_json
 
 flow = (
     Pipeline("file-processing", pool="default", cpu=2, memory_mb=512)
-    .step("read", read_text)
-    .step("count", word_count, depends_on=["read"])
-    .step("write", write_json, depends_on=["count"])
+    .step("read", read_text, workload="io", resources={"cpu": 0.1, "memory_mb": 64})
+    .step(
+        "count",
+        word_count,
+        depends_on=["read"],
+        workload="cpu",
+        resources={"cpu": 2, "memory_mb": 256},
+    )
+    .step(
+        "write",
+        write_json,
+        depends_on=["count"],
+        workload="io",
+        resources={"cpu": 0.1, "memory_mb": 32},
+    )
 )
 task = Client("http://control:8080", "your-admin-token").submit(
     flow.spec("/dataflow/input.txt"), key="file-001"
@@ -122,6 +135,10 @@ task = Client("http://control:8080", "your-admin-token").submit(
 算子预装在镜像中，通过 module:symbol 引用，签名为 operator(context, inputs)。
 支持函数、协程函数、无参数构造的 callable class；轻量实例按任务/步骤创建。重资源通过 `context.resource(key, factory)` 在同一槽位内跨任务复用，详见 [常驻运行进程](docs/resident-runners.md)。
 inputs 是直接上游返回值映射，算子必须视依赖结果为只读。
+
+0.4.0 新任务默认按算子预留资源，完成后释放；任务仍在同一常驻槽位完成。
+`dag_workers` / `io_workers` 分别限制 CPU / IO 算子并发，未配置节点默认继承顶层 CPU/内存。
+前端节点编辑器可直接设置类型与资源，详见 [算子级资源调度](docs/operator-scheduling.md)。
 
 ```python
 def process(context, inputs):

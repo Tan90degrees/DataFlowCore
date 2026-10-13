@@ -39,11 +39,14 @@ jobs:
         run: |
           python scripts/business_benchmark.py --files 24 --workers 2 --slots 4 --dsn "$DATAFLOW_TEST_DATABASE_URL" --output .e2e/business-postgres.json
           python scripts/business_benchmark.py --files 120 --workers 2 --slots 4 --chars 2048 --dsn "$DATAFLOW_TEST_DATABASE_URL" --output .e2e/business-batch-120.json
+          python scripts/benchmark_operator_scheduling.py --files 8 --repetitions 1 --dsn "$DATAFLOW_TEST_DATABASE_URL" --output-dir .e2e/operators
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: business-performance
-          path: .e2e/business-*.json
+          path: |
+            .e2e/business-*.json
+            .e2e/operators/*.json
           include-hidden-files: true
       - run: python -m build
       - uses: azure/setup-helm@v4.3.0

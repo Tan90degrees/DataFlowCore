@@ -51,6 +51,10 @@ def run(
     dsn=None,
     embedding_workers=4,
     cpu_rounds=0,
+    scheduling=None,
+    worker_cpu=None,
+    worker_memory_mb=None,
+    task_cpu=None,
 ):
     root = Path(root).resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -101,9 +105,9 @@ def run(
                 "--slots",
                 str(slots),
                 "--cpu",
-                str(max(slots * 2, embedding_workers if cpu_rounds else 1)),
+                str(worker_cpu or max(slots * 2, embedding_workers if cpu_rounds else 1)),
                 "--memory-mb",
-                str(slots * 512),
+                str(worker_memory_mb or slots * 512),
                 "--interval",
                 str(interval),
                 "--stop-grace",
@@ -121,8 +125,10 @@ def run(
                 >= workers
             )
         )
+        scheduling_options = {"scheduling": scheduling} if scheduling is not None else {}
         flow = pipeline(
-            cpu=embedding_workers if cpu_rounds else 1,
+            **scheduling_options,
+            cpu=task_cpu or (embedding_workers if cpu_rounds else 1),
             memory_mb=128,
             parameters={
                 "embedding_url": None if cpu_rounds else f"http://127.0.0.1:{model.server_port}",
@@ -221,6 +227,7 @@ def run(
                         "store.py",
                         "client.py",
                         "contracts.py",
+                        "resources.py",
                         "api.py",
                         "__init__.py",
                     )
@@ -245,6 +252,9 @@ def run(
                 "embedding_workers": embedding_workers,
                 "cpu_rounds": cpu_rounds,
                 "polling": "batch" if hasattr(client, "statuses") else "individual",
+                "scheduling": tasks[0]["spec"].get("scheduling", "task"),
+                "worker_cpu": worker_cpu or max(slots * 2, embedding_workers if cpu_rounds else 1),
+                "worker_memory_mb": worker_memory_mb or slots * 512,
             },
             "elapsed_seconds": elapsed,
             "files_per_second": files / elapsed,
@@ -289,7 +299,26 @@ def run(
                 else None
                 for step in ("parse", "chunk", "stats", "embed", "index", "receipt")
             },
+            "scheduler_peaks": {
+                key: max(t["result"]["runtime"].get("scheduler", {}).get(key, 0) for t in tasks)
+                for key in ("peak_cpu", "peak_memory_mb", "peak_io_operators")
+            },
+            "resource_wait_p95_seconds": percentile(
+                [
+                    sum(
+                        s.get("resource_wait_seconds", 0)
+                        for s in t["attempts"][-1]["progress"].get("steps", {}).values()
+                    )
+                    for t in tasks
+                ],
+                0.95,
+            ),
         }
+        if result["scheduler_peaks"]["peak_cpu"]:
+            assert result["scheduler_peaks"]["peak_cpu"] <= result["config"]["worker_cpu"]
+            assert (
+                result["scheduler_peaks"]["peak_memory_mb"] <= result["config"]["worker_memory_mb"]
+            )
         return result
     finally:
         for proc in reversed(processes):
@@ -318,6 +347,10 @@ def main():
     p.add_argument("--dsn")
     p.add_argument("--embedding-workers", type=int, default=4)
     p.add_argument("--cpu-rounds", type=int, default=0)
+    p.add_argument("--scheduling", choices=("task", "operator"))
+    p.add_argument("--worker-cpu", type=int)
+    p.add_argument("--worker-memory-mb", type=int)
+    p.add_argument("--task-cpu", type=int)
     args = p.parse_args()
     with tempfile.TemporaryDirectory(prefix="dataflow-business-") as root:
         report = run(
@@ -331,6 +364,10 @@ def main():
             dsn=args.dsn,
             embedding_workers=args.embedding_workers,
             cpu_rounds=args.cpu_rounds,
+            scheduling=args.scheduling,
+            worker_cpu=args.worker_cpu,
+            worker_memory_mb=args.worker_memory_mb,
+            task_cpu=args.task_cpu,
         )
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     Path(args.output).write_text(json.dumps(report, ensure_ascii=False, indent=2))

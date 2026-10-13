@@ -5,7 +5,14 @@ from pathlib import Path
 
 from tests.test_e2e import until
 
-OBSERVE = [{"id": "observe", "callable": "tests.resident_operators:Observe"}]
+OBSERVE = [
+    {
+        "id": "observe",
+        "callable": "tests.resident_operators:Observe",
+        "workload": "io",
+        "resources": {"cpu": 1, "memory_mb": 256},
+    }
+]
 
 
 def observe(cluster, **changes):
@@ -21,7 +28,7 @@ def dead(pid):
 
 
 def test_pid_resources_and_both_thread_pools_reused_with_fresh_task_state(cluster):
-    cluster.worker(1, "--runner-map-workers", "2")
+    cluster.worker(1, "--runner-io-map-workers", "2")
     first = observe(cluster, parameters={"label": "first", "nested": {"items": [1]}})
     second = observe(cluster, parameters={"label": "second", "nested": {"items": [2]}})
     a, b = first["result"]["steps"]["observe"], second["result"]["steps"]["observe"]

@@ -27,8 +27,10 @@ GET /healthz、/readyz、/version为公开探针；/metrics使用管理员认证
 | POST | /v1/worker/renew | 续租、进度、接收取消 |
 | POST | /v1/worker/complete | 幂等结果提交 |
 
-示例见examples/file_pipeline.json。cpu/memory_mb为准入预算，dag_workers限制DAG
-线程并发。max_attempts包含首次执行，timeout为每次Attempt最长时间，retry_delay
+示例见examples/file_pipeline.json。0.4.0 默认 `scheduling=operator`，节点以
+`workload=cpu/io`、`resources={cpu, memory_mb}` 声明资源，顶层 CPU/内存规范化为
+最大单算子需求。`dag_workers` / `io_workers` 分别限制 CPU / IO 算子并发，详见
+[算子级资源调度](operator-scheduling.md)。max_attempts包含首次执行，timeout为每次Attempt最长时间，retry_delay
 为初始指数退避。输入SHA256由管控固定，调用者可以提前提供。
 完成/续租字段为tid、aid、session_id、token。领取返回assignment包含task_id、
 attempt_id、number、token、完整spec和lease_seconds。续租返回cancel及lease_seconds。
@@ -49,7 +51,9 @@ attempt_id、number、token、完整spec和lease_seconds。续租返回cancel及
 Progress.fraction按DAG步骤等权计算，运行中有total的步骤计入其局部比例，
 不是字节/页数加权的业务SLA。计数约100ms合并刷盘，生命周期转换立即刷盘；
 管控可见延迟仍取决于worker.interval。终态包含FAILED/CANCELLED/SKIPPED。
-成功Result.usage包含cpu_seconds和peak_rss_bytes，仅统计该文件子进程。
+资源等待状态为 WAITING_RESOURCES，步骤包含 workload/resources、resource_wait_seconds；
+Progress.scheduler 和活跃 worker.scheduler 为执行器共享预留快照，不是每任务独占值。
+成功Result.usage包含当前任务的cpu_seconds和运行进程生命周期peak_rss_bytes。
 极大DAG进度压缩为步骤状态，诊断日志按JSON预算裁剪，避免进度导致续租失败。
 
 ## 浏览器管控 API

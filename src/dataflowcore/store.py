@@ -143,7 +143,7 @@ class Store:
     def json_field(self, name, numeric=False):
         # Names are internal constants, never interpolated from user input.
         value = f"spec::jsonb->>'{name}'" if self.postgres else f"json_extract(spec, '$.{name}')"
-        return f"CAST(({value}) AS INTEGER)" if numeric else value
+        return f"CAST(({value}) AS DOUBLE PRECISION)" if numeric else value
 
     @staticmethod
     def event(db, task_id, attempt_id, kind, payload, now):
@@ -153,6 +153,7 @@ class Store:
         )
 
     def submit(self, spec: TaskSpec, request_key: str):
+        spec = TaskSpec.parse(spec.json())
         encoded = canonical(spec.json())
         hashed = fingerprint(spec.json())
         with self.transaction() as db:
@@ -239,26 +240,43 @@ class Store:
                 json.loads(db.one("SELECT spec FROM tasks WHERE id = ?", (r["task_id"],))["spec"])
                 for r in running
             ]
-            cpu_left = worker["cpu"] - sum(s["cpu"] for s in used)
-            mem_left = worker["memory_mb"] - sum(s["memory_mb"] for s in used)
+            legacy = [s for s in used if s.get("scheduling", "task") == "task"]
+            cpu_left = worker["cpu"] - sum(s["cpu"] for s in legacy)
+            mem_left = worker["memory_mb"] - sum(s["memory_mb"] for s in legacy)
+            mode = f"COALESCE(({self.json_field('scheduling')}), 'task')"
             # Filter eligibility before LIMIT: unrelated pools or oversized files
             # must never starve a runnable task behind the first 1000 queue entries.
             candidates = db.all(
                 "SELECT * FROM tasks WHERE state = 'QUEUED' AND available_at <= ? "
                 f"AND ({self.json_field('pool')}) = ? "
                 f"AND ({self.json_field('runtime_version')}) = ? "
-                f"AND {self.json_field('cpu', True)} <= ? "
-                f"AND {self.json_field('memory_mb', True)} <= ? "
+                f"AND (({mode} = 'operator' AND {self.json_field('cpu', True)} <= ? "
+                f"AND {self.json_field('memory_mb', True)} <= ?) "
+                f"OR ({mode} = 'task' AND {self.json_field('cpu', True)} <= ? "
+                f"AND {self.json_field('memory_mb', True)} <= ?)) "
                 "ORDER BY created_at, id LIMIT 1",
-                (now, worker["pool"], worker["runtime_version"], cpu_left, mem_left),
+                (
+                    now,
+                    worker["pool"],
+                    worker["runtime_version"],
+                    worker["cpu"],
+                    worker["memory_mb"],
+                    cpu_left,
+                    mem_left,
+                ),
             )
             for task in candidates:
                 spec = json.loads(task["spec"])
+                capacity_cpu, capacity_memory = (
+                    (worker["cpu"], worker["memory_mb"])
+                    if spec.get("scheduling", "task") == "operator"
+                    else (cpu_left, mem_left)
+                )
                 if (
                     spec["pool"] != worker["pool"]
                     or spec["runtime_version"] != worker["runtime_version"]
-                    or spec["cpu"] > cpu_left
-                    or spec["memory_mb"] > mem_left
+                    or spec["cpu"] > capacity_cpu
+                    or spec["memory_mb"] > capacity_memory
                 ):
                     continue
                 aid, token = uid(), uid()
@@ -291,12 +309,18 @@ class Store:
 
     def assignment(self, db, attempt):
         task = db.one("SELECT * FROM tasks WHERE id = ?", (attempt["task_id"],))
+        spec = json.loads(task["spec"])
+        if spec.get("scheduling", "task") == "task":
+            # Old runners reject unknown fields. Keep the legacy wire contract
+            # even after manual retry normalized the persisted definition.
+            spec.pop("scheduling", None)
+            spec.pop("io_workers", None)
         return {
             "task_id": task["id"],
             "attempt_id": attempt["id"],
             "token": attempt["token"],
             "number": attempt["number"],
-            "spec": json.loads(task["spec"]),
+            "spec": spec,
             "lease_seconds": max(0.0, min(attempt["lease_until"], attempt["deadline"]) - db.now()),
         }
 
@@ -441,7 +465,7 @@ class Store:
         old = self.get(tid)
         if old["state"] not in ("FAILED", "CANCELLED"):
             raise Conflict("only failed or cancelled tasks can be manually retried")
-        spec = TaskSpec.parse(old["spec"])
+        spec = TaskSpec.parse({"scheduling": "task", **old["spec"]})
         return self.submit(spec, f"retry:{tid}:{request_key}")
 
     @staticmethod
@@ -567,7 +591,23 @@ class Store:
         with self.transaction(False) as db:
             now = db.now()
             rows = db.all("SELECT * FROM workers ORDER BY name, session_id")
-            return [{**r, "online": now - r["last_seen"] <= self.lease_seconds} for r in rows]
+            snapshots = {}
+            for attempt in db.all(
+                "SELECT worker_session, progress FROM attempts "
+                "WHERE state IN ('RUNNING','STOPPING') "
+                "ORDER BY started_at"
+            ):
+                progress = json.loads(attempt["progress"])
+                if "scheduler" in progress:
+                    snapshots[attempt["worker_session"]] = progress["scheduler"]
+            return [
+                {
+                    **r,
+                    "online": now - r["last_seen"] <= self.lease_seconds,
+                    "scheduler": snapshots.get(r["session_id"]),
+                }
+                for r in rows
+            ]
 
     def stats(self):
         with self.transaction(False) as db:

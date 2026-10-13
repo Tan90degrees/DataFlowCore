@@ -4,7 +4,7 @@ import hashlib
 import json
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +50,13 @@ def number(value: Any, name: str, low: float, high: float) -> float:
     return float(value)
 
 
+def cpu_units(value: Any, name: str = "cpu") -> float:
+    value = number(value, name, 0, 1024)
+    if abs(value * 1000 - round(value * 1000)) > 1e-7:
+        raise Invalid(f"{name} must use at most three decimal places")
+    return value
+
+
 def keys(value: dict, allowed: set[str]) -> None:
     if not isinstance(value, dict):
         raise Invalid("expected a JSON object")
@@ -66,7 +73,9 @@ class TaskSpec:
     parameters: dict = field(default_factory=dict)
     pool: str = "default"
     dag_workers: int = 2
-    cpu: int = 1
+    io_workers: int = 16
+    scheduling: str = "operator"
+    cpu: float = 1
     memory_mb: int = 256
     max_attempts: int = 3
     retry_delay: float = 2.0
@@ -92,16 +101,21 @@ class TaskSpec:
         if not isinstance(spec.parameters, dict):
             raise Invalid("parameters must be an object")
         integer(spec.dag_workers, "dag_workers", 1, 256)
-        integer(spec.cpu, "cpu", 1, 1024)
+        integer(spec.io_workers, "io_workers", 1, 256)
+        if spec.scheduling not in ("operator", "task"):
+            raise Invalid("scheduling must be operator or task")
+        cpu_units(spec.cpu)
+        if spec.scheduling == "task":
+            integer(spec.cpu, "task cpu", 1, 1024)
         integer(spec.memory_mb, "memory_mb", 1, 1048576)
         integer(spec.max_attempts, "max_attempts", 1, 100)
         number(spec.retry_delay, "retry_delay", 0, 86400)
         number(spec.timeout, "timeout", 0.1, 604800)
         if not isinstance(spec.steps, list) or not 1 <= len(spec.steps) <= 1000:
             raise Invalid("steps must contain 1..1000 operators")
-        ids = set()
+        ids, normalized = set(), []
         for step in spec.steps:
-            keys(step, {"id", "callable", "depends_on", "parameters"})
+            keys(step, {"id", "callable", "depends_on", "parameters", "workload", "resources"})
             sid = step.get("id")
             if not isinstance(sid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", sid):
                 raise Invalid("invalid step id")
@@ -117,6 +131,25 @@ class TaskSpec:
                 raise Invalid("duplicate/self dependency")
             if not isinstance(step.get("parameters", {}), dict):
                 raise Invalid("step parameters must be an object")
+            if spec.scheduling == "task":
+                if "workload" in step or "resources" in step:
+                    raise Invalid("step resources/workload require operator scheduling")
+                normalized.append(dict(step))
+                continue
+            workload = step.get("workload", "cpu")
+            if workload not in ("cpu", "io"):
+                raise Invalid("step workload must be cpu or io")
+            resources = step.get("resources", {})
+            keys(resources, {"cpu", "memory_mb"})
+            cpu = cpu_units(resources.get("cpu", spec.cpu), "step resources.cpu")
+            memory = integer(
+                resources.get("memory_mb", spec.memory_mb), "step resources.memory_mb", 1, 1048576
+            )
+            if workload == "cpu" and cpu < 0.001:
+                raise Invalid("CPU operators require positive resources.cpu")
+            normalized.append(
+                step | {"workload": workload, "resources": {"cpu": cpu, "memory_mb": memory}}
+            )
         resolved = set()
         while len(resolved) < len(ids):
             ready = {
@@ -129,6 +162,15 @@ class TaskSpec:
             resolved |= ready
         if len(canonical(data)) > 1_000_000:
             raise Invalid("task specification too large")
+        if spec.scheduling == "operator":
+            # Placement needs the largest single-node demand, never a reservation
+            # for the entire file. Keep indexed top-level fields for queue filtering.
+            return replace(
+                spec,
+                steps=normalized,
+                cpu=max(s["resources"]["cpu"] for s in normalized),
+                memory_mb=max(s["resources"]["memory_mb"] for s in normalized),
+            )
         return spec
 
     def json(self) -> dict:

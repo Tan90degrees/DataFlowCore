@@ -55,6 +55,12 @@ spec:
             - "{{ .Values.worker.runnerMapWorkers }}"
             - --runner-max-tasks
             - "{{ .Values.worker.runnerMaxTasks }}"
+            - --runner-io-workers
+            - "{{ dig "runnerIoWorkers" 16 .Values.worker }}"
+            - --runner-io-map-workers
+            - "{{ dig "runnerIoMapWorkers" 16 .Values.worker }}"
+            - --io-concurrency
+            - "{{ dig "ioConcurrency" 32 .Values.worker }}"
           env:
             - name: DATAFLOW_WORKER_TOKEN
               valueFrom:

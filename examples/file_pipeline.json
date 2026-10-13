@@ -2,16 +2,18 @@
   "name": "word-count",
   "input_path": "/dataflow/input.txt",
   "pool": "default",
-  "runtime_version": "0.3.0",
+  "runtime_version": "0.4.0",
+  "scheduling": "operator",
   "cpu": 1,
   "memory_mb": 256,
   "dag_workers": 2,
+  "io_workers": 16,
   "max_attempts": 3,
   "retry_delay": 2,
   "timeout": 300,
   "steps": [
-    {"id": "read", "callable": "dataflowcore.operators:read_text"},
-    {"id": "count", "callable": "dataflowcore.operators:word_count", "depends_on": ["read"]},
-    {"id": "write", "callable": "dataflowcore.operators:write_json", "depends_on": ["count"]}
+    {"id": "read", "callable": "dataflowcore.operators:read_text", "workload": "io", "resources": {"cpu": 0.1, "memory_mb": 64}},
+    {"id": "count", "callable": "dataflowcore.operators:word_count", "depends_on": ["read"], "workload": "cpu", "resources": {"cpu": 1, "memory_mb": 64}},
+    {"id": "write", "callable": "dataflowcore.operators:write_json", "depends_on": ["count"], "workload": "io", "resources": {"cpu": 0.1, "memory_mb": 32}}
   ]
 }

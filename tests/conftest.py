@@ -53,6 +53,7 @@ def spec(tmp_path):
         {
             "input_path": str(source),
             "retry_delay": 0,
+            "scheduling": "task",
             "steps": [{"id": "read", "callable": "dataflowcore.operators:read_text"}],
         }
     )

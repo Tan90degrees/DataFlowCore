@@ -64,6 +64,9 @@ def parser():
     worker.add_argument("--runner-dag-workers", type=int, default=8)
     worker.add_argument("--runner-map-workers", type=int, default=8)
     worker.add_argument("--runner-max-tasks", type=int, default=100)
+    worker.add_argument("--runner-io-workers", type=int, default=16)
+    worker.add_argument("--runner-io-map-workers", type=int, default=16)
+    worker.add_argument("--io-concurrency", type=int, default=32)
     for name in ("submit", "get", "cancel", "retry", "events", "list", "workers", "wait", "drain"):
         sub = commands.add_parser(name)
         sub.add_argument("--url", default=os.getenv("DATAFLOW_URL", "http://127.0.0.1:8080"))
@@ -99,6 +102,9 @@ def parser():
     runner.add_argument("--map-workers", type=int, required=True)
     runner.add_argument("--max-tasks", type=int, required=True)
     runner.add_argument("--allow-gil", action="store_true")
+    runner.add_argument("--budget-path")
+    runner.add_argument("--io-workers", type=int, default=16)
+    runner.add_argument("--io-map-workers", type=int, default=16)
     return p
 
 
@@ -145,6 +151,9 @@ def main():
             runner_dag_workers=args.runner_dag_workers,
             runner_map_workers=args.runner_map_workers,
             runner_max_tasks=args.runner_max_tasks,
+            runner_io_workers=args.runner_io_workers,
+            runner_io_map_workers=args.runner_io_map_workers,
+            io_concurrency=args.io_concurrency,
         ).run()
     elif args.command == "_runner":
         from .runner import runner_main
@@ -157,6 +166,9 @@ def main():
             args.map_workers,
             args.max_tasks,
             args.allow_gil,
+            args.budget_path,
+            args.io_workers,
+            args.io_map_workers,
         )
     elif args.command == "_run":
         from .worker import parent_death_signal

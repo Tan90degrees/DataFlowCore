@@ -10,7 +10,7 @@ class Pipeline:
     def __init__(self, name, **defaults):
         self.name, self.defaults, self.steps = name, defaults, []
 
-    def step(self, step_id, fn, *, depends_on=(), parameters=None):
+    def step(self, step_id, fn, *, depends_on=(), parameters=None, workload=None, resources=None):
         if isinstance(fn, str):
             reference = fn
         elif inspect.isfunction(fn) or inspect.isclass(fn):
@@ -27,6 +27,10 @@ class Pipeline:
                 "parameters": {} if parameters is None else parameters,
             }
         )
+        if workload is not None:
+            self.steps[-1]["workload"] = workload
+        if resources is not None:
+            self.steps[-1]["resources"] = resources
         return self
 
     def spec(self, input_path, **overrides):

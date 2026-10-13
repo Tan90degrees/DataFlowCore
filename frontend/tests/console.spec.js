@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { readdir, stat } from "node:fs/promises";
-const input = path.resolve("../.e2e/console/input.txt");
+const input = path.join(process.env.DATAFLOW_CONSOLE_TEST_ROOT, "input.txt");
 const base = "http://127.0.0.1:8086";
 const headers = { Authorization: `Bearer ${"a".repeat(32)}` };
 
@@ -236,6 +236,49 @@ test("local upload through /api preserves edits, confirms lost response and exec
   expect(finished.spec.parameters.business).toBe("前端上传");
   expect(finished.result.steps.stats.words).toBe(400);
   expect(finished.result.runtime.gil_enabled).toBe(false);
+});
+
+test("per-operator resource editing, IO bypass and resource-wait cancellation", async ({ page, request }) => {
+  const holder = await (await request.post(base + "/v1/tasks", {
+    headers: { ...headers, "Idempotency-Key": `holder-${Date.now()}` },
+    data: spec("CPU 预算占用", [{id: "hold", callable: "dataflowcore.operators:delay",
+      workload: "cpu", resources: {cpu: 4, memory_mb: 128}, parameters: {seconds: 30}}]),
+  })).json();
+  try {
+    await expect.poll(async () => {
+      const task = await (await request.get(base + `/v1/tasks/${holder.id}`, {headers})).json();
+      return task.attempts.at(-1)?.progress.steps?.hold.state;
+    }).toBe("RUNNING");
+    await connect(page);
+    await page.getByRole("link", {name: "DAG 编排"}).click();
+    await page.getByLabel("任务名称").fill("算子预算浏览器验证");
+    await page.getByLabel("共享文件绝对路径").fill(input);
+    await page.getByLabel("算子类型", {exact: true}).selectOption("io");
+    await page.getByLabel("算子 CPU", {exact: true}).fill("0");
+    await page.getByLabel("算子内存 MiB", {exact: true}).fill("64");
+    await page.getByRole("button", {name: "编辑节点 count", exact: true}).click();
+    await page.getByLabel("算子类型", {exact: true}).selectOption("cpu");
+    await page.getByLabel("算子 CPU", {exact: true}).fill("4");
+    await page.getByLabel("算子内存 MiB", {exact: true}).fill("128");
+    await page.getByRole("button", {name: "编辑节点 read", exact: true}).click();
+    await expect(page.getByLabel("算子 CPU", {exact: true})).toHaveValue("0");
+    await page.screenshot({path: "test-results/operator-editor.png", fullPage: true});
+    const tid = await submit(page);
+    await expect(page.locator(".step-row").filter({hasText: "count"})).toContainText("等待资源");
+    const task = await (await request.get(base + `/v1/tasks/${tid}`, {headers})).json();
+    expect(task.spec.scheduling).toBe("operator");
+    expect(task.spec.cpu).toBe(4);
+    expect(task.spec.steps.find(s => s.id === "read").resources).toEqual({cpu: 0, memory_mb: 64});
+    expect(task.spec.steps.find(s => s.id === "count").resources).toEqual({cpu: 4, memory_mb: 128});
+    expect(task.attempts.at(-1).progress.steps.read.state).toBe("SUCCEEDED");
+    await page.getByRole("button", {name: "停止任务", exact: true}).click();
+    await page.locator("#confirm-yes").click();
+    await expect(page.locator(".title-meta .badge")).toHaveText("已取消");
+  } finally {
+    const cancelled = await request.post(base + `/v1/tasks/${holder.id}/cancel`, {headers, data: {}});
+    expect(cancelled.ok()).toBeTruthy();
+    await expect.poll(async () => (await (await request.get(base + `/v1/tasks/${holder.id}`, {headers})).json()).state).toMatch(/CANCELLED|SUCCEEDED/);
+  }
 });
 
 test("lost submit response is idempotent; cancellation, retry, failures and worker drain", async ({

@@ -1,4 +1,11 @@
 import { defineConfig } from "@playwright/test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+// Service databases/WAL must live on local temporary storage, independently of
+// repository snapshots, artifacts and concurrent build/check processes.
+process.env.DATAFLOW_CONSOLE_TEST_ROOT ||= mkdtempSync(path.join(tmpdir(), "dataflow-console-"));
 export default defineConfig({
   testDir: "./tests",
   timeout: 60000,
@@ -20,6 +27,6 @@ export default defineConfig({
     url: "http://127.0.0.1:8000",
     reuseExistingServer: false,
     timeout: 30000,
-    env: { PYTHONPATH: "../src" },
+    env: { PYTHONPATH: "../src", DATAFLOW_CONSOLE_TEST_ROOT: process.env.DATAFLOW_CONSOLE_TEST_ROOT },
   },
 });
