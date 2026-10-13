@@ -90,7 +90,6 @@ def test_control_places_files_without_whole_task_reservation(store, spec):
 
 
 def test_control_filters_fractional_and_oversized_nodes_before_queue_limit(store, spec):
-    register(store, slots=3, cpu=1, memory_mb=128)
     big = TaskSpec.parse(spec.json() | {"scheduling": "operator", "steps": [node(cpu=2)]})
     for i in range(1050):
         store.submit(big, f"big-{i}")
@@ -98,6 +97,9 @@ def test_control_filters_fractional_and_oversized_nodes_before_queue_limit(store
         spec.json() | {"scheduling": "operator", "steps": [node(kind="io", cpu=0.125)]}
     )
     task = store.submit(small, "small")
+    # PostgreSQL batch setup can exceed the six-second test lease; the worker
+    # must be live when testing queue eligibility, independently of setup time.
+    register(store, slots=3, cpu=1, memory_mb=128)
     assert store.claim("worker", "small-claim")["task_id"] == task["id"]
 
 
