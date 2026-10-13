@@ -8,6 +8,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+from .resources import ResourceBudget
 from .runner_runtime import RunnerRuntime
 from .runtime import atomic_json, child_main, require_free_threading
 from .worker import LogCapture, parent_death_signal
@@ -49,7 +50,18 @@ def group_has_children():
             return False
 
 
-def runner_main(root, data_root, parent_pid, dag_workers, map_workers, max_tasks, allow_gil=False):
+def runner_main(
+    root,
+    data_root,
+    parent_pid,
+    dag_workers,
+    map_workers,
+    max_tasks,
+    allow_gil=False,
+    budget_path=None,
+    io_workers=16,
+    io_map_workers=16,
+):
     parent_death_signal(parent_pid)
     if sys.platform == "linux":
         import ctypes
@@ -59,7 +71,14 @@ def runner_main(root, data_root, parent_pid, dag_workers, map_workers, max_tasks
             raise OSError(ctypes.get_errno(), "PR_SET_CHILD_SUBREAPER failed")
     require_free_threading(allow_gil)
     root = Path(root)
-    runtime = RunnerRuntime(dag_workers, map_workers)
+    runtime = RunnerRuntime(
+        dag_workers,
+        map_workers,
+        io_workers,
+        io_map_workers,
+        ResourceBudget(budget_path) if budget_path else None,
+        root.name,
+    )
     completed = None
 
     def shutdown(*_):

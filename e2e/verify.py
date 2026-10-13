@@ -71,6 +71,10 @@ def verify_business(task):
     assert count == receipt["chunks"] == len(vectors)
     assert task["attempts"][-1]["progress"]["fraction"] == 1
     assert result["runtime"]["gil_enabled"] is False
+    assert task["spec"]["scheduling"] == "operator"
+    assert task["spec"]["steps"][3]["workload"] == "io"
+    assert result["runtime"]["scheduler"]["peak_cpu"] <= 2
+    assert result["runtime"]["scheduler"]["peak_memory_mb"] <= 1024
 
 
 until(lambda: client.request("GET", "/readyz"))

@@ -408,6 +408,10 @@ tr:hover td {
   background: #edf0ff;
   color: #5c6fdf;
 }
+.badge.WAITING_RESOURCES {
+  background: #fff4db;
+  color: #a77722;
+}
 .badge.SUCCEEDED,
 .badge.online {
   background: #e8f7f1;
@@ -653,6 +657,13 @@ textarea {
 }
 .graph-node.RUNNING circle {
   fill: #6379eb;
+}
+.graph-node.WAITING_RESOURCES circle {
+  fill: #c89537;
+}
+.graph-node.WAITING_RESOURCES rect {
+  fill: #fff9ed;
+  stroke: #dab778;
 }
 .graph-node.SUCCEEDED circle {
   fill: #46ae8c;

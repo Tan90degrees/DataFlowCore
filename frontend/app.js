@@ -11,6 +11,7 @@ const states = {
   FAILED: "失败",
   CANCELLED: "已取消",
   PENDING: "等待",
+  WAITING_RESOURCES: "等待资源",
   SKIPPED: "跳过",
   online: "在线",
   offline: "离线",
@@ -18,7 +19,7 @@ const states = {
 };
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
 let api = null,
-  version = "0.3.0",
+  version = "0.4.0",
   epoch = 0,
   refreshing = false,
   connected = false;
@@ -54,7 +55,7 @@ function h(tag, attrs = {}, ...children) {
     if (key === "class") node.className = value;
     else if (key === "onclick" || key === "onchange")
       node.addEventListener(key.slice(2), value);
-    else if (["value", "checked", "disabled", "hidden"].includes(key))
+    else if (["value", "checked", "disabled", "hidden", "selected"].includes(key))
       node[key] = value;
     else node.setAttribute(key, value);
   }
@@ -696,7 +697,7 @@ function renderDetail() {
       h(
         "p",
         { class: "hint" },
-        "DAG 在一个执行器内执行；同层节点可使用真实线程并行。",
+        "DAG 在同一执行器内执行；CPU / IO 分别限制并发，算子按 CPU 与内存预算排队。",
       ),
       h(
         "div",
@@ -712,6 +713,7 @@ function renderDetail() {
               {},
               h("strong", {}, s.id),
               h("p", { class: "hint" }, state.message || s.callable),
+              s.resources ? h("p", { class: "hint" }, `${(s.workload || "cpu").toUpperCase()} · CPU ${s.resources.cpu} · ${s.resources.memory_mb} MiB · 等待 ${seconds(state.resource_wait_seconds)}`) : null,
             ),
             h("span", { class: "muted" }, seconds(state.duration_seconds)),
             state.total
@@ -780,7 +782,7 @@ function renderDetail() {
         "div",
         { class: "actions" },
         button("复制到编排器", () => {
-          draft = structuredClone(task.spec);
+          draft = {scheduling: "task", ...structuredClone(task.spec)};
           resetUpload();
           selected = draft.steps[0].id;
           validation = "";
@@ -846,8 +848,9 @@ function renderDetail() {
           kv([
             ["输入文件", task.spec.input_path],
             ["执行池", task.spec.pool],
-            ["线程 / CPU", `${task.spec.dag_workers} / ${task.spec.cpu}`],
-            ["内存声明", `${task.spec.memory_mb} MiB`],
+            ["调度粒度", task.spec.scheduling === "operator" ? "算子" : "任务"],
+            ["CPU / IO 算子并发", `${task.spec.dag_workers} / ${task.spec.io_workers || 16}`],
+            [task.spec.scheduling === "operator" ? "最大算子需求" : "任务预留", `CPU ${task.spec.cpu} / ${task.spec.memory_mb} MiB`],
             ["运行版本", task.spec.runtime_version],
             ["超时", `${task.spec.timeout} 秒`],
             ["创建时间", date(task.created_at)],
@@ -908,6 +911,9 @@ function renderWorkers() {
               ["运行版本", worker.runtime_version],
               ["并发槽位", worker.slots],
               ["CPU / 内存", `${worker.cpu} / ${worker.memory_mb} MiB`],
+              ["当前资源预留", worker.scheduler ? `CPU ${worker.scheduler.cpu} / ${worker.scheduler.memory_mb} MiB` : "当前无资源快照"],
+              ["算子运行 / 等待", worker.scheduler ? `${worker.scheduler.active_operators} / ${worker.scheduler.waiting_operators}` : "—"],
+              ["IO 运行 / 上限", worker.scheduler ? `${worker.scheduler.io_operators} / ${worker.scheduler.io_concurrency}` : "—"],
               ["最近心跳", date(worker.last_seen)],
             ]),
             h(
@@ -986,6 +992,11 @@ function syncDraft() {
       );
     step.callable = $("#node-callable").value.trim();
     step.parameters = objectJSON($("#node-parameters").value, "节点参数");
+    if (copy.scheduling !== "task") {
+      copy.scheduling = "operator";
+      step.workload = $("#node-workload").value;
+      step.resources = {cpu: Number($("#node-cpu").value), memory_mb: Number($("#node-memory").value)};
+    }
     step.depends_on = Array.from(
       $("#dependencies").querySelectorAll("input:checked"),
       (node) => node.value,
@@ -1012,7 +1023,7 @@ function formField(key, label, type = "text", span = false) {
     h("input", {
       "data-field": key,
       "aria-label": label,
-      value: draft[key],
+      value: draft[key] ?? (key === "io_workers" ? 16 : ""),
       type,
       ...(key === "input_path" ? { onchange: (event) => {
         if (upload.file && event.target.value !== upload.result?.input_path) {
@@ -1023,8 +1034,8 @@ function formField(key, label, type = "text", span = false) {
       } } : {}),
       ...(type === "number"
         ? {
-            step: key === "timeout" || key === "retry_delay" ? "any" : "1",
-            min: key === "retry_delay" ? "0" : "1",
+            step: ["timeout", "retry_delay", "cpu"].includes(key) ? "any" : "1",
+            min: ["retry_delay", "cpu"].includes(key) ? "0" : "1",
           }
         : {}),
     }),
@@ -1250,9 +1261,8 @@ function renderDAG() {
     formField("input_path", "共享文件绝对路径"),
     formField("pool", "执行池"),
     formField("runtime_version", "运行版本"),
-    formField("dag_workers", "DAG 线程数", "number"),
-    formField("cpu", "CPU 声明", "number"),
-    formField("memory_mb", "内存声明 MiB", "number"),
+    formField("dag_workers", "CPU 算子并发上限", "number"),
+    draft.scheduling !== "task" ? formField("io_workers", "IO 算子并发上限", "number") : null,
     formField("timeout", "任务超时 秒", "number"),
   );
   const extra = h(
@@ -1264,6 +1274,8 @@ function renderDAG() {
       { class: "form-grid" },
       formField("max_attempts", "最多尝试次数", "number"),
       formField("retry_delay", "重试间隔 秒", "number"),
+      formField("cpu", draft.scheduling === "task" ? "任务 CPU 预留" : "未配置算子的默认 CPU", "number"),
+      formField("memory_mb", draft.scheduling === "task" ? "任务内存预留 MiB" : "未配置算子的默认内存 MiB", "number"),
       h(
         "label",
         { class: "span-2" },
@@ -1323,6 +1335,14 @@ function renderDAG() {
         h("input", { id: "node-callable", value: selectedStep.callable }),
       ),
       h("label", {}, "上游依赖", dependencies),
+      draft.scheduling !== "task" ? h("div", {class: "form-grid"},
+        h("label", {}, "算子类型", h("select", {id: "node-workload", "aria-label": "算子类型", value: selectedStep.workload || "cpu"},
+          h("option", {value: "cpu", selected: (selectedStep.workload || "cpu") === "cpu"}, "CPU 密集型"),
+          h("option", {value: "io", selected: selectedStep.workload === "io"}, "IO 密集型"))),
+        h("label", {}, "算子 CPU", h("input", {id: "node-cpu", type: "number", min: "0", step: "0.001", value: selectedStep.resources?.cpu ?? draft.cpu})),
+        h("label", {}, "算子内存 MiB", h("input", {id: "node-memory", type: "number", min: "1", step: "1", value: selectedStep.resources?.memory_mb ?? draft.memory_mb})),
+        h("p", {class: "hint span-2"}, "就绪后按声明预留资源，算子完成后释放。CPU 最小精度 0.001；IO 可填 0，但仍受内存和 IO 并发限制。实际硬限制由 Pod 配置控制。"),
+      ) : h("p", {class: "hint"}, "当前为兼容的任务级预留模式；新建模板默认使用算子级调度。"),
       h(
         "label",
         {},
@@ -1388,6 +1408,7 @@ function renderDAG() {
             callable: "dataflowcore.operators:delay",
             depends_on: [selected],
             parameters: { seconds: 1 },
+            ...(draft.scheduling !== "task" ? {workload: "io", resources: {cpu: 0, memory_mb: 32}} : {}),
           };
           draft.steps.push(step);
           selected = step.id;

@@ -12,7 +12,7 @@ from dataflowcore.contracts import TaskSpec
 from dataflowcore.store import Store
 
 repo = Path(__file__).resolve().parents[2]
-root = repo / ".e2e" / "console"
+root = Path(os.environ["DATAFLOW_CONSOLE_TEST_ROOT"])
 root.mkdir(parents=True, exist_ok=True)
 source = root / "input.txt"
 source.write_text("DataFlow 文档业务验证 hello world\n" * 100, encoding="utf-8")

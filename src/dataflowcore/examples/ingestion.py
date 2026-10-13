@@ -19,7 +19,7 @@ from dataflowcore.sdk import Pipeline
 
 
 def pipeline(**defaults):
-    return (
+    flow = (
         Pipeline("document-ingestion", **defaults)
         .step("parse", parse)
         .step("chunk", chunk, depends_on=["parse"])
@@ -28,6 +28,25 @@ def pipeline(**defaults):
         .step("index", index, depends_on=["embed", "stats"])
         .step("receipt", receipt, depends_on=["index"])
     )
+    if defaults.get("scheduling", "operator") == "operator":
+        # Local vectors perform CPU work; remote inference mostly waits for IO.
+        remote = bool(defaults.get("parameters", {}).get("embedding_url"))
+        memory = defaults.get("memory_mb", 128)
+        for step in flow.steps:
+            kind = (
+                "cpu"
+                if step["id"] in ("chunk", "stats") or (step["id"] == "embed" and not remote)
+                else "io"
+            )
+            cpu = (
+                defaults.get("cpu", 1)
+                if step["id"] == "embed" and not remote
+                else 1
+                if kind == "cpu"
+                else 0.1
+            )
+            step.update(workload=kind, resources={"cpu": cpu, "memory_mb": memory})
+    return flow
 
 
 def records(path):

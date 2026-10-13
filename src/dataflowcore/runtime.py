@@ -64,21 +64,28 @@ def atomic_json(path, value):
 
 
 class Progress:
-    def __init__(self, path, steps, flush_interval=0.1, runner=None):
+    def __init__(self, path, steps, flush_interval=0.1, runner=None, scheduler=None):
         self.path = path
         self.lock = threading.Lock()
-        self.steps = {s["id"]: {"state": "PENDING"} for s in steps}
+        self.steps = {
+            s["id"]: {
+                "state": "PENDING",
+                **{key: s[key] for key in ("workload", "resources") if key in s},
+            }
+            for s in steps
+        }
         self.flush_interval, self.last_flush = flush_interval, 0.0
         self.started = time.monotonic()
         self.state, self.closed = "RUNNING", False
         self.runner = runner
+        self.scheduler = scheduler
         self.update()
 
     def update(self, sid=None, **values):
         with self.lock:
             if self.closed:
                 return
-            transition = sid is None or "state" in values
+            transition = "state" in values
             if sid:
                 if values.get("state") == "RUNNING":
                     values["started_at"] = time.time()
@@ -112,6 +119,8 @@ class Progress:
         }
         if self.runner:
             snapshot["runner"] = self.runner
+        if self.scheduler:
+            snapshot["scheduler"] = self.scheduler()
         if len(canonical(snapshot)) > 200_000:
             for step in self.steps.values():
                 step.pop("message", None)
@@ -129,7 +138,7 @@ class Progress:
             for step in self.steps.values():
                 if step["state"] == "PENDING":
                     step["state"] = "SKIPPED"
-                elif step["state"] == "RUNNING":
+                elif step["state"] in ("RUNNING", "WAITING_RESOURCES"):
                     step.update(state="CANCELLED", finished_at=time.time())
             self.flush_locked()
             self.closed = True
@@ -147,6 +156,8 @@ class Context:
     _progress: Progress
     _runtime: object = None
     _operator: str = ""
+    workload: str = "cpu"
+    resources: dict | None = None
 
     def check_cancelled(self):
         if self.cancelled.is_set():
@@ -190,7 +201,15 @@ class Context:
             return result
 
         if self._runtime is not None:
-            yield from self._runtime.map(invoke, items, max_workers, pending)
+            yield from self._runtime.map(
+                invoke,
+                items,
+                max_workers,
+                pending,
+                self.workload,
+                self.resources,
+                f"{self.attempt_id}:{self.step_id}",
+            )
             return
 
         pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=self.step_id)
@@ -223,7 +242,9 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
     before = resource.getrusage(resource.RUSAGE_SELF)
     owned = runtime is None
     runtime = runtime or RunnerRuntime()
-    spec = TaskSpec.parse(assignment["spec"])
+    # Canonical operator assignments always carry scheduling. A missing field
+    # is the legacy wire contract, including tasks issued before this upgrade.
+    spec = TaskSpec.parse({"scheduling": "task", **assignment["spec"]})
     cancelled = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: cancelled.set())
     signal.signal(signal.SIGINT, lambda *_: cancelled.set())
@@ -237,20 +258,48 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
         Path(data_root) / "outputs" / assignment["task_id"] / assignment["attempt_id"], data_root
     )
     output.mkdir(parents=True, exist_ok=False)
-    functions = {s["id"]: resolve_symbol(s["callable"]) for s in spec.steps}
     runtime_info = require_free_threading(allow_gil)
     runtime_info["runner"] = {
         "pid": os.getpid(),
         "tasks_before": runtime.completed_tasks,
         "dag_workers": runtime.dag_workers,
         "map_workers": runtime.map_workers,
+        "io_workers": runtime.io_workers,
+        "io_map_workers": runtime.io_map_workers,
     }
     progress = Progress(
-        Path(workspace) / "progress.json", spec.steps, runner=runtime_info["runner"]
+        Path(workspace) / "progress.json",
+        spec.steps,
+        runner=runtime_info["runner"],
+        scheduler=runtime.budget.snapshot,
     )
-    results, running, submitted = {}, {}, set()
-    pool = runtime.dag
-    dag_workers = min(spec.dag_workers, runtime.dag_workers)
+    results, running, submitted, waiting = {}, {}, set(), {}
+    limits = {
+        "cpu": min(spec.dag_workers, runtime.dag_workers),
+        "io": min(spec.io_workers, runtime.io_workers),
+    }
+    task_key = f"{assignment['attempt_id']}:task"
+
+    def waiting_for(step, message):
+        sid = step["id"]
+        transition = {}
+        if sid not in waiting:
+            waiting[sid] = time.monotonic()
+            transition["state"] = "WAITING_RESOURCES"
+        progress.update(
+            sid,
+            **transition,
+            message=message,
+            resource_wait_seconds=max(0, time.monotonic() - waiting[sid]),
+        )
+
+    def ready(step):
+        sid = step["id"]
+        progress.update(
+            sid,
+            resource_wait_seconds=max(0, time.monotonic() - waiting.pop(sid, time.monotonic())),
+            message="",
+        )
 
     def execute(step, inputs):
         sid = step["id"]
@@ -265,12 +314,18 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
             progress,
             runtime,
             step["callable"],
+            step.get("workload", "cpu"),
+            step.get("resources"),
         )
         context.check_cancelled()
         progress.update(sid, state="RUNNING")
         try:
             # Operators must treat dependency results as read-only.
-            value = functions[sid](context, MappingProxyType(inputs))
+            # Import/construct only after admission: large model initialization
+            # belongs to the operator's memory reservation too.
+            fn = resolve_symbol(step["callable"])
+            require_free_threading(allow_gil)
+            value = fn(context, MappingProxyType(inputs))
             if inspect.isawaitable(value):
                 value = asyncio.run(value)
             require_free_threading(allow_gil)
@@ -278,6 +333,8 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
             encoded = canonical(value)
             if len(encoded) > 262144:
                 raise PermanentError("step result too large; return a file reference instead")
+            if not runtime.maps_idle(f"{assignment['attempt_id']}:{sid}"):
+                raise PermanentError("operator left unfinished context.map work")
             progress.update(sid, state="SUCCEEDED")
             return value
         except Exception as exc:
@@ -287,22 +344,58 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
             raise
 
     try:
+        if spec.scheduling == "task":
+            while not runtime.budget.acquire(
+                runtime.owner,
+                task_key,
+                "cpu",
+                {
+                    "cpu": spec.cpu,
+                    "memory_mb": spec.memory_mb,
+                },
+            ):
+                for step in spec.steps:
+                    if not step.get("depends_on"):
+                        waiting_for(step, "Waiting for task resources")
+                if cancelled.wait(0.05):
+                    raise Cancelled("task cancellation requested")
         while len(results) < len(spec.steps):
             if cancelled.is_set():
                 raise Cancelled("task cancellation requested")
             for step in spec.steps:
                 deps = step.get("depends_on", [])
-                if (
-                    step["id"] not in submitted
-                    and set(deps) <= results.keys()
-                    and len(running) < dag_workers
-                ):
+                kind = step.get("workload", "cpu")
+                if step["id"] not in submitted and set(deps) <= results.keys():
+                    if (
+                        sum(s.get("workload", "cpu") == kind for s in running.values())
+                        >= limits[kind]
+                    ):
+                        waiting_for(step, f"Waiting for {kind.upper()} concurrency slot")
+                        continue
+                    key = f"{assignment['attempt_id']}:{step['id']}"
+                    if spec.scheduling == "operator" and not runtime.budget.acquire(
+                        runtime.owner, key, kind, step["resources"]
+                    ):
+                        waiting_for(step, "Waiting for executor CPU/memory or IO concurrency")
+                        continue
+                    ready(step)
+                    pool = runtime.io if kind == "io" else runtime.dag
                     future = pool.submit(execute, step, {d: results[d] for d in deps})
-                    running[future] = step["id"]
+                    running[future] = step
                     submitted.add(step["id"])
+            if not running:
+                cancelled.wait(0.05)
+                progress.update()
+                continue
             done, _ = wait(running, timeout=0.1, return_when=FIRST_COMPLETED)
             for future in done:
-                results[running.pop(future)] = future.result()
+                step = running.pop(future)
+                results[step["id"]] = future.result()
+                if spec.scheduling == "operator":
+                    runtime.budget.release(
+                        runtime.owner, f"{assignment['attempt_id']}:{step['id']}"
+                    )
+            progress.update()
         if not runtime.idle():
             raise PermanentError("operator left unfinished context.map work")
         if file_hash(source) != actual_hash:
@@ -319,6 +412,12 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
                         "sha256": file_hash(path),
                     }
                 )
+        # A failed/cancelled runner deliberately keeps its reservations until the
+        # supervisor kills its whole group. Success is safe to release and reuse.
+        if spec.scheduling == "task":
+            runtime.budget.release(runtime.owner, task_key)
+        runtime_info["scheduling"] = spec.scheduling
+        runtime_info["scheduler"] = runtime.budget.snapshot()
         progress.finish("SUCCEEDED")
         usage = resource.getrusage(resource.RUSAGE_SELF)
         return {

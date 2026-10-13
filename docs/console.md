@@ -1,5 +1,10 @@
 # 独立前端管控台
 
+0.4.0 的「节点配置」可设置 CPU / IO 类型、CPU 和内存 MiB；默认按算子调度。
+任务详情显示资源等待与节点时长，执行器页显示整个执行器的共享预留快照。
+`CPU 算子并发上限` 与 `IO 算子并发上限` 分别控制两类 DAG 并行，详见
+[算子级资源调度](operator-scheduling.md)。
+
 前端位于 `frontend/`，是独立静态 HTML/CSS/ES modules 应用，没有 Python 页面模板和生产 npm 依赖。管控节点只提供 JSON API。前端、API、执行器各自构建和部署，前端更新不需要替换执行器镜像。
 
 ## 启动
@@ -122,10 +127,10 @@ CPU/内存是调度声明，实际限制由 Pod 资源控制。日志是最多�
 两个镜像分别构建，推送到自己的镜像仓库，不能假设默认 GHCR 镜像已经发布：
 
 ```bash
-docker build -t registry.example.com/dataflowcore:0.3.0 .
-docker build -t registry.example.com/dataflowcore-console:0.1.0 frontend
-docker push registry.example.com/dataflowcore:0.3.0
-docker push registry.example.com/dataflowcore-console:0.1.0
+docker build -t registry.example.com/dataflowcore:0.4.0 .
+docker build -t registry.example.com/dataflowcore-console:0.2.0 frontend
+docker push registry.example.com/dataflowcore:0.4.0
+docker push registry.example.com/dataflowcore-console:0.2.0
 helm upgrade --install dataflowcore charts/dataflowcore \
   --set image.repository=registry.example.com/dataflowcore \
   --set console.enabled=true \

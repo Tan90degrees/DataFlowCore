@@ -17,6 +17,7 @@ from pathlib import Path
 from . import __version__
 from .client import APIError, Client
 from .contracts import canonical
+from .resources import ResourceBudget
 from .runtime import atomic_json, require_free_threading
 
 log = logging.getLogger(__name__)
@@ -121,6 +122,9 @@ class Worker:
         runner_dag_workers=8,
         runner_map_workers=8,
         runner_max_tasks=100,
+        runner_io_workers=16,
+        runner_io_map_workers=16,
+        io_concurrency=32,
     ):
         if min(slots, cpu, memory_mb) < 1 or interval <= 0 or stop_grace < 0:
             raise ValueError("invalid worker capacity/timing")
@@ -130,6 +134,7 @@ class Worker:
         self.data_root = Path(data_root).resolve()
         self.root = Path(work_root).resolve() / self.session
         self.root.mkdir(parents=True, exist_ok=True)
+        self.budget = ResourceBudget(self.root / "resources.sqlite", cpu, memory_mb, io_concurrency)
         self.slots, self.cpu, self.memory_mb, self.pool = slots, cpu, memory_mb, pool
         self.interval, self.stop_grace, self.allow_gil = interval, stop_grace, allow_gil
         self.runtime_version = runtime_version
@@ -142,12 +147,24 @@ class Worker:
         self.claim_id = str(uuid.uuid4())
         self.lease_seconds = 30
         self.last_contact = time.monotonic()
-        if not 1 <= runner_dag_workers <= 256 or not 1 <= runner_map_workers <= 256:
+        if any(
+            not 1 <= v <= 256
+            for v in (
+                runner_dag_workers,
+                runner_map_workers,
+                runner_io_workers,
+                runner_io_map_workers,
+            )
+        ):
             raise ValueError("runner thread limits must be in 1..256")
         if not 0 <= runner_max_tasks <= 1000000:
             raise ValueError("runner max tasks must be in 0..1000000")
         self.runner_dag_workers, self.runner_map_workers = runner_dag_workers, runner_map_workers
         self.runner_max_tasks = runner_max_tasks
+        self.runner_io_workers, self.runner_io_map_workers = (
+            runner_io_workers,
+            runner_io_map_workers,
+        )
         self.runners = {}
 
     def request(self, endpoint, data):
@@ -177,6 +194,7 @@ class Worker:
                     slot.logs.tail()[-2000:],
                 )
                 self.signal_group(slot, signal.SIGKILL)
+                self.budget.release(slot.workspace.name)
                 slot.logs.close()
                 shutil.rmtree(slot.workspace)
             workspace = self.root / f"runner-{index}-{uuid.uuid4().hex}"
@@ -201,6 +219,12 @@ class Worker:
             str(self.runner_map_workers),
             "--max-tasks",
             str(self.runner_max_tasks),
+            "--budget-path",
+            str(self.budget.path),
+            "--io-workers",
+            str(self.runner_io_workers),
+            "--io-map-workers",
+            str(self.runner_io_map_workers),
         ]
         if self.allow_gil:
             command.append("--allow-gil")
@@ -294,6 +318,8 @@ class Worker:
             if running.process.poll() is not None:
                 running.process.wait(timeout=2)
                 self.signal_group(running, signal.SIGKILL)
+                if running.slot:
+                    self.budget.release(running.slot.workspace.name)
             if running.slot:
                 running.slot.busy = False
         running.log_file.close()
@@ -335,6 +361,7 @@ class Worker:
                 continue
             try:
                 progress = self.read_json(running.workspace / "progress.json", {})
+                progress["scheduler"] = self.budget.snapshot()
                 progress["log_tail"] = running.log_file.tail()
                 # JSON escaping can expand a non-UTF8 log tail by up to 6x.
                 # Diagnostic output must never invalidate an otherwise healthy lease.
@@ -448,6 +475,7 @@ class Worker:
                             in ("READY", "BUSY")
                             for slot in self.runners.values()
                         ),
+                        "scheduler": self.budget.snapshot(),
                     },
                 )
                 if now >= next_tick:
@@ -473,11 +501,12 @@ class Worker:
                         pass
                 self.signal_group(slot, signal.SIGKILL)
                 slot.process.wait(timeout=2)
+                self.budget.release(slot.workspace.name)
                 slot.logs.close()
                 shutil.rmtree(slot.workspace)
             # Never delete output files here: accepted results outlive the worker Pod.
-            if not any(self.root.iterdir()):
-                shutil.rmtree(self.root)
+            self.budget.close()
+            shutil.rmtree(self.root)
 
 
 def parent_death_signal(parent_pid):
