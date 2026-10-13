@@ -95,6 +95,8 @@ test("auth, cursor pagination, filters, DAG edits, cycle rejection and business 
   const task = await (
     await request.get(`${base}/v1/tasks/${id}`, { headers })
   ).json();
+  await expect(page.getByRole("button", { name: "停止任务", exact: true })).toBeDisabled();
+  await expect(page.locator("#task-stop-hint")).toContainText("已完成");
   expect(task.result.steps.count.words).toBe(400);
   expect(task.spec.steps.at(-1).id).toBe("finish");
   expect(task.result.runtime.gil_enabled).toBe(false);
@@ -273,6 +275,8 @@ test("lost submit response is idempotent; cancellation, retry, failures and work
   const id = await submit(page);
   expect(secondKey).toBe(firstKey);
   await expect(page.locator(".title-meta .badge")).toHaveText("运行中");
+  await expect(page.getByRole("button", { name: "停止任务", exact: true })).toBeEnabled();
+  await expect(page.locator("#task-stop-hint")).toContainText("运行中的任务可以停止");
   await page.getByRole("button", { name: "停止任务" }).click();
   await page.locator("#confirm-yes").click();
   await expect(page.locator(".title-meta .badge")).toHaveText("已取消");
@@ -317,6 +321,8 @@ test("lost submit response is idempotent; cancellation, retry, failures and work
   );
   const failed = await submit(page);
   await expect(page.locator(".title-meta .badge")).toHaveText("失败");
+  await expect(page.getByRole("button", { name: "停止任务", exact: true })).toBeDisabled();
+  await expect(page.locator("#task-stop-hint")).toContainText("失败");
   await page.getByRole("button", { name: "日志", exact: true }).click();
   await expect(page.locator(".log")).toContainText("example permanent failure");
   expect(await page.locator("main img").count()).toBe(0);
@@ -393,6 +399,96 @@ test("development server default /api connects and validates through the real pr
   );
   await page.getByRole("button", { name: "校验 DAG" }).click();
   expect((await validation).status()).toBe(200);
+});
+
+test("stop acknowledgement survives an older in-flight refresh", async ({ page, request }) => {
+  await connect(page);
+  const response = await request.post(base + "/v1/tasks", {
+    headers: { ...headers, "Idempotency-Key": "stop-refresh-" + Date.now() },
+    data: { ...spec("停止排队任务与刷新竞态", [
+      { id: "read", callable: "dataflowcore.operators:read_text" },
+    ]), pool: "no-executor" },
+  });
+  expect(response.ok()).toBe(true);
+  const task = await response.json();
+  await page.evaluate((id) => { location.hash = `task/${id}`; }, task.id);
+  await expect(page.locator(".title-meta .badge")).toHaveText("排队中");
+  await expect(page.getByRole("button", { name: "停止任务", exact: true })).toBeEnabled();
+  let markHeld, release;
+  const held = new Promise((resolve) => { markHeld = resolve; });
+  const pause = new Promise((resolve) => { release = resolve; });
+  await page.route(`**/v1/tasks/${task.id}`, async (route) => {
+    const snapshot = await route.fetch();
+    const body = await snapshot.body();
+    markHeld();
+    await pause;
+    await route.fulfill({ response: snapshot, body });
+  }, { times: 1 });
+  try {
+    await page.getByRole("button", { name: "刷新", exact: true }).click();
+    await held;
+    await page.getByRole("button", { name: "停止任务", exact: true }).click();
+    const acknowledgement = page.waitForResponse((result) =>
+      result.url().endsWith(`/v1/tasks/${task.id}/cancel`) && result.request().method() === "POST",
+    );
+    await page.locator("#confirm-yes").click();
+    expect((await (await acknowledgement).json()).state).toBe("CANCELLED");
+    // The accepted state must appear even while an older GET is still pending.
+    await expect(page.locator(".title-meta .badge")).toHaveText("已取消", { timeout: 3000 });
+    await expect(page.getByRole("button", { name: "停止任务", exact: true })).toBeDisabled();
+    const stale = page.waitForResponse((result) =>
+      result.url().endsWith(`/v1/tasks/${task.id}`) && result.request().method() === "GET",
+    );
+    release();
+    expect((await (await stale).json()).state).toBe("QUEUED");
+    await expect(page.getByRole("button", { name: "刷新", exact: true })).toBeEnabled();
+    await expect(page.locator(".title-meta .badge")).toHaveText("已取消");
+    await expect(page.locator("#task-stop-hint")).toContainText("已取消");
+  } finally {
+    release();
+  }
+});
+
+test("stop controls recover after dismissing confirmation and reconnecting an expired token", async ({ page, request }) => {
+  await connect(page);
+  const response = await request.post(base + "/v1/tasks", {
+    headers: { ...headers, "Idempotency-Key": "stop-reconnect-" + Date.now() },
+    data: { ...spec("排队任务停止权限恢复", [
+      { id: "read", callable: "dataflowcore.operators:read_text" },
+    ]), pool: "no-executor" },
+  });
+  expect(response.ok()).toBe(true);
+  const task = await response.json();
+  await page.evaluate((id) => { location.hash = `task/${id}`; }, task.id);
+  await expect(page.locator(".title-meta .badge")).toHaveText("排队中");
+  let cancels = 0;
+  page.on("request", (event) => {
+    if (event.method() === "POST" && event.url().endsWith(`/v1/tasks/${task.id}/cancel`)) cancels++;
+  });
+  await page.getByRole("button", { name: "停止任务", exact: true }).click();
+  await expect(page.locator("#stop-task")).toBeDisabled();
+  await expect(page.locator("#task-stop-hint")).toContainText("正在确认");
+  await page.locator("#confirm-no").click();
+  await expect(page.getByRole("button", { name: "停止任务", exact: true })).toBeEnabled();
+  expect(cancels).toBe(0);
+  expect((await (await request.get(`${base}/v1/tasks/${task.id}`, { headers })).json()).state).toBe("QUEUED");
+  // Forward an invalid credential to the real API rather than mocking its 401.
+  await page.route(`**/v1/tasks/${task.id}`, (route) => route.continue({
+    headers: { ...route.request().headers(), authorization: "Bearer " + "w".repeat(32) },
+  }), { times: 1 });
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await expect(page.locator("#notice")).toContainText("管理令牌失效");
+  await expect(page.locator("#stop-task")).toBeDisabled();
+  await expect(page.locator("#task-stop-hint")).toContainText("重新连接");
+  await page.getByRole("button", { name: /配置 API 连接/ }).click();
+  await page.getByLabel("管理令牌").fill("a".repeat(32));
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await expect(page.getByRole("button", { name: "停止任务", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "停止任务", exact: true }).click();
+  await page.locator("#confirm-yes").click();
+  await expect(page.locator(".title-meta .badge")).toHaveText("已取消");
+  await expect(page.locator("#task-stop-hint")).toContainText("已取消");
+  expect(cancels).toBe(1);
 });
 
 test("cancel a slow real upload and keep the task draft", async ({ page, request }) => {

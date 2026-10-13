@@ -22,6 +22,8 @@ let api = null,
   epoch = 0,
   refreshing = false,
   connected = false;
+let dataRevision = 0;
+const stoppingTasks = new Set();
 let route = "tasks",
   taskId = "",
   rows = [],
@@ -66,23 +68,29 @@ function h(tag, attrs = {}, ...children) {
     );
   return node;
 }
-const button = (label, action, cls = "", disabled = false) =>
-  h(
+const button = (label, action, cls = "", disabled = false) => {
+  const isDisabled = () => typeof disabled === "function" ? disabled() : disabled;
+  return h(
     "button",
-    { type: "button", class: cls, disabled, onclick: run(action) },
+    { type: "button", class: cls, disabled: isDisabled(), onclick: run(action, isDisabled) },
     label,
   );
-function run(action) {
+};
+function run(action, isDisabled = () => false) {
   return async (event) => {
     const node = event?.currentTarget;
     if (node instanceof HTMLButtonElement) node.disabled = true;
     try {
       await action(event);
     } catch (error) {
-      notify(error.message);
+      if (error instanceof APIError && error.status === 401) {
+        connected = false;
+        connectionUI();
+        notify("管理令牌失效，请重新配置 API 连接。当前展示的是上次获取的数据。");
+      } else notify(error.message);
     } finally {
       if (node instanceof HTMLButtonElement && node.isConnected)
-        node.disabled = false;
+        node.disabled = isDisabled();
     }
   };
 }
@@ -214,6 +222,7 @@ function connectionUI() {
     ? "API 已连接"
     : "配置 API 连接";
   $("#connection-dot").className = "live-dot" + (connected ? "" : " offline");
+  paintTaskActions();
 }
 function resetData() {
   rows = [];
@@ -292,8 +301,10 @@ $("#refresh").onclick = run(() => refresh(true));
 async function refresh(manual = false) {
   if (!connected || refreshing || (document.hidden && !manual)) return;
   const activeEpoch = epoch,
+    activeRevision = dataRevision,
     activeRoute = route,
     activeId = taskId;
+  const isCurrent = () => epoch === activeEpoch && dataRevision === activeRevision;
   refreshing = true;
   try {
     const client = api;
@@ -311,25 +322,25 @@ async function refresh(manual = false) {
             task_ids: page.tasks.map((t) => t.id),
           })
         : { tasks: [] };
-      if (epoch !== activeEpoch) return;
+      if (!isCurrent()) return;
       const byId = new Map(status.tasks.map((t) => [t.id, t]));
       counts = overview.task_counts;
       rows = page.tasks.map((t) => ({ ...t, ...byId.get(t.id) }));
       nextCursor = page.next_cursor;
     } else if (activeRoute === "workers") {
       const result = await client.request("/v1/workers");
-      if (epoch !== activeEpoch) return;
+      if (!isCurrent()) return;
       workers = result.workers;
     } else if (activeRoute === "detail") {
       const [task, history] = await Promise.all([
         client.request(`/v1/tasks/${encodeURIComponent(activeId)}`),
         client.request(`/v1/tasks/${encodeURIComponent(activeId)}/events`),
       ]);
-      if (epoch !== activeEpoch) return;
+      if (!isCurrent()) return;
       detail = task;
       events = history.events;
     }
-    if (epoch !== activeEpoch) return;
+    if (!isCurrent()) return;
     $("#refresh-status").textContent =
       `${version} · ${new Date().toLocaleTimeString("zh-CN", { hour12: false })} 已更新`;
     const editingFilter =
@@ -338,7 +349,7 @@ async function refresh(manual = false) {
       document.activeElement.value.trim() !== filterPool;
     if (route !== "dag" && !editingFilter) render();
   } catch (error) {
-    if (epoch !== activeEpoch) return;
+    if (!isCurrent()) return;
     $("#refresh-status").textContent = "更新失败 · 显示上次数据";
     notify(error.message);
     if (error instanceof APIError && error.status === 401) {
@@ -348,7 +359,7 @@ async function refresh(manual = false) {
     }
   } finally {
     refreshing = false;
-    if (connected && epoch !== activeEpoch) void refresh();
+    if (connected && !isCurrent()) void refresh();
   }
 }
 function parseRoute() {
@@ -565,19 +576,64 @@ function renderTasks() {
   ];
 }
 
+function stopTaskReason() {
+  if (!detail) return "正在获取任务状态，请稍候。";
+  if (terminal.has(detail.state)) return `当前任务${states[detail.state]}，无需停止。`;
+  if (detail.state === "STOPPING")
+    return "停止请求已接收，正在等待执行器退出；完成后状态会变为已取消。";
+  if (!connected) return "API 未连接或管理令牌已失效，请通过「配置 API 连接」重新连接后停止任务。";
+  if (stoppingTasks.has(detail.id)) return "正在确认或发送停止请求，请稍候。";
+  if (!["QUEUED", "RUNNING"].includes(detail.state))
+    return `当前任务状态 ${detail.state} 无法停止，请刷新任务状态。`;
+  return "";
+}
+function stopTaskHint() {
+  return stopTaskReason() || (detail?.state === "QUEUED"
+    ? "排队中的任务可以直接取消，无需等待执行器上线。"
+    : "运行中的任务可以停止；确认后会停止当前文件的 DAG。");
+}
+function paintTaskActions() {
+  const stop = $("#stop-task");
+  if (!stop) return;
+  stop.disabled = !!stopTaskReason();
+  stop.title = stopTaskHint();
+  $("#task-stop-hint").textContent = stopTaskHint();
+  $("#retry-task").disabled = !connected || !["FAILED", "CANCELLED"].includes(detail?.state);
+}
 async function cancelTask() {
   const client = needAPI(),
-    id = detail.id;
-  if (
-    !(await confirm(
-      "停止任务",
-      "停止当前文件任务及其正在执行的节点。运行中的任务会先进入停止中，执行器确认退出后变为已取消。",
-    ))
-  )
-    return;
-  await client.post(`/v1/tasks/${id}/cancel`);
-  notify("已发送停止请求", true);
-  await refresh();
+    task = detail,
+    activeEpoch = epoch;
+  const reason = stopTaskReason();
+  if (reason) { notify(reason); return; }
+  const id = task.id;
+  stoppingTasks.add(id);
+  paintTaskActions();
+  let confirmed = false;
+  try {
+    if (!(await confirm("停止任务",
+      `确认停止「${task.spec.name}」？运行中的任务会先进入停止中，执行器确认退出后变为已取消。`,
+    ))) return;
+    if (api !== client || epoch !== activeEpoch || !connected)
+      throw new Error("任务页面或 API 连接已改变，请重新选择任务后停止。");
+    confirmed = true;
+    const result = await client.post(`/v1/tasks/${id}/cancel`);
+    if (api === client && epoch === activeEpoch && route === "detail" && taskId === id) {
+      // Apply the authoritative acknowledgement before fetching more detail.
+      // Older in-flight GETs must not replace it with an earlier task state.
+      detail = { ...detail, ...result };
+      dataRevision++;
+      render();
+    }
+    if (api === client) notify("管控节点已确认停止请求", true);
+  } finally {
+    try {
+      if (confirmed && api === client && connected) await refresh(true);
+    } finally {
+      stoppingTasks.delete(id);
+      paintTaskActions();
+    }
+  }
 }
 async function retryTask() {
   const client = needAPI(),
@@ -708,6 +764,13 @@ function renderDetail() {
     ["result", "结果"],
     ["spec", "任务配置"],
   ];
+  const stopButton = button("停止任务", cancelTask, "danger ghost", () => !!stopTaskReason());
+  stopButton.id = "stop-task";
+  stopButton.title = stopTaskHint();
+  stopButton.setAttribute("aria-describedby", "task-stop-hint");
+  const retryButton = button("从头重试", retryTask, "",
+    () => !["FAILED", "CANCELLED"].includes(detail?.state) || !connected);
+  retryButton.id = "retry-task";
   return [
     h("a", { href: "#tasks", class: "back" }, "← 返回任务列表"),
     heading(
@@ -724,20 +787,11 @@ function renderDetail() {
           submitIdentity = null;
           location.hash = "dag";
         }),
-        button(
-          "从头重试",
-          retryTask,
-          "",
-          !["FAILED", "CANCELLED"].includes(task.state) || !connected,
-        ),
-        button(
-          "停止任务",
-          cancelTask,
-          "danger ghost",
-          !["QUEUED", "RUNNING"].includes(task.state) || !connected,
-        ),
+        retryButton,
+        stopButton,
       ),
     ),
+    h("p", { id: "task-stop-hint", class: "hint", role: "status" }, stopTaskHint()),
     task.error ? h("p", { class: "error-text" }, task.error) : null,
     h(
       "div",
