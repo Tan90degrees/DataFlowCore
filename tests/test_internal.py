@@ -248,10 +248,12 @@ def test_file_finishing_during_pulse_still_persists_final_step_progress(
             result = old_pulse(**kwargs)
             # The renewal committed before the final on-disk snapshot existed.
             until(
-                lambda: worker.read_json(running.slot.workspace / "state.json", {}).get(
-                    "completed_attempt"
+                lambda: (
+                    worker.read_json(running.slot.workspace / "state.json", {}).get(
+                        "completed_attempt"
+                    )
+                    == running.assignment["attempt_id"]
                 )
-                == running.assignment["attempt_id"]
             )
             return result
 
