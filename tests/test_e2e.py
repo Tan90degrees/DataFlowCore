@@ -263,7 +263,9 @@ def test_supervisor_kill_terminates_task_child(cluster):
     if sys.platform != "linux":
         pytest.skip("Linux parent-death signal")
 
-    pid = json.loads((workspace / "runner.json").read_text())["pid"]
+    from dataflowcore.worker import Worker
+
+    pid = until(lambda: Worker.read_json(workspace / "runner.json"))["pid"]
     worker.send_signal(signal.SIGKILL)
     worker.wait(timeout=3)
 

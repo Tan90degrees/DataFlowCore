@@ -603,13 +603,30 @@ class Store:
         )
         return {"cancel": task["state"] == "STOPPING", "lease_seconds": max(0.0, until - now)}
 
-    def complete(self, tid, aid, session_id, token, state, result=None, error=None, retryable=True):
+    def complete(
+        self,
+        tid,
+        aid,
+        session_id,
+        token,
+        state,
+        result=None,
+        error=None,
+        retryable=True,
+        progress=None,
+    ):
         if type(retryable) is not bool or (error is not None and not isinstance(error, str)):
             raise Invalid("retryable must be boolean and error must be text")
         if state not in TERMINAL:
             raise Invalid("invalid completion state")
         payload = {"state": state, "result": result, "error": error, "retryable": retryable}
-        if len(canonical(payload)) > 1_000_000:
+        encoded_progress = None
+        if progress is not None:
+            if not isinstance(progress, dict) or len(canonical(progress)) > 262144:
+                raise Invalid("invalid completion progress")
+            encoded_progress = canonical(progress)
+        completion = {**payload, "progress": progress} if progress is not None else payload
+        if len(canonical(completion)) > 1_000_000:
             raise Invalid("completion too large")
         hashed = fingerprint(payload)
         with self.transaction() as db:
@@ -631,8 +648,16 @@ class Store:
                 raise Conflict("task was not cancelled")
             db.execute(
                 "UPDATE attempts SET state = ?, finished_at = ?, result = ?, error = ?, "
-                "completion_hash = ? WHERE id = ?",
-                (state, now, canonical(result) if result is not None else None, error, hashed, aid),
+                "completion_hash = ?, progress = COALESCE(?,progress) WHERE id = ?",
+                (
+                    state,
+                    now,
+                    canonical(result) if result is not None else None,
+                    error,
+                    hashed,
+                    encoded_progress,
+                    aid,
+                ),
             )
             self.finish_task(db, task, state, result, error, retryable, now)
             self.event(db, tid, aid, "completed", {"state": state, "error": error}, now)

@@ -1,15 +1,18 @@
 """Internal component performance paths retain fencing and bounded admission."""
 
+import json
 import signal
 import sqlite3
 import threading
+import time
+from types import SimpleNamespace
 
 import pytest
 
 from dataflowcore.contracts import Invalid, TaskSpec
 from dataflowcore.resources import ResourceBudget
 from dataflowcore.store import Store
-from dataflowcore.worker import Worker
+from dataflowcore.worker import Running, Worker
 from tests.conftest import complete, register
 from tests.test_e2e import until
 from tests.test_production import production_api as production_api
@@ -189,3 +192,116 @@ def test_postgres_pool_reuses_and_replaces_broken_connections(store):
     until(lambda: store.pool_stats()["connections_num"] > after)
     with store.transaction(False) as db:
         assert int(db.one("SHOW statement_timeout")["statement_timeout"].removesuffix("s")) > 0
+
+
+def test_completion_commits_final_progress_and_result_together(store, spec):
+    register(store)
+    task = store.submit(spec, "final-progress")
+    assignment = store.claim("worker", "claim")
+    identity = {**renewal(assignment), "session_id": "worker"}
+    store.renew(**identity, progress={"state": "RUNNING", "completed_steps": 0})
+    final = {
+        "state": "SUCCEEDED",
+        "completed_steps": 1,
+        "steps": {"read": {"state": "SUCCEEDED", "duration_seconds": 0.01}},
+    }
+    store.complete(**identity, state="SUCCEEDED", result={"ok": 1}, progress=final)
+    assert store.get(task["id"])["attempts"][0]["progress"] == final
+    store.complete(**identity, state="SUCCEEDED", result={"ok": 1}, progress={"state": "RUNNING"})
+    assert store.get(task["id"])["attempts"][0]["progress"] == final
+
+
+def test_file_finishing_during_pulse_still_persists_final_step_progress(
+    production_api, store, spec, tmp_path
+):
+    task = store.submit(
+        TaskSpec.parse(
+            spec.json()
+            | {
+                "steps": [
+                    {
+                        "id": "delay",
+                        "callable": "dataflowcore.operators:delay",
+                        "parameters": {"seconds": 0.15},
+                    }
+                ]
+            }
+        ),
+        "pulse-race",
+    )
+    worker = Worker(
+        f"http://127.0.0.1:{production_api.server_port}",
+        "",
+        tmp_path,
+        tmp_path / "work",
+        interval=0.2,
+    )
+    try:
+        worker.ensure_runners()
+        until(lambda: worker.available_runner())
+        worker.tick()
+        running = next(iter(worker.running.values()))
+        until(lambda: worker.read_json(running.workspace / "progress.json", {}).get("steps"))
+        old_pulse = store.pulse
+
+        def delayed_pulse(**kwargs):
+            result = old_pulse(**kwargs)
+            # The renewal committed before the final on-disk snapshot existed.
+            until(
+                lambda: worker.read_json(running.slot.workspace / "state.json", {}).get(
+                    "completed_attempt"
+                )
+                == running.assignment["attempt_id"]
+            )
+            return result
+
+        store.pulse = delayed_pulse
+        worker.tick()
+        final = store.get(task["id"])
+        assert final["state"] == "SUCCEEDED"
+        progress = final["attempts"][0]["progress"]
+        assert progress["state"] == "SUCCEEDED" and progress["completed_steps"] == 1
+        assert progress["steps"]["delay"]["state"] == "SUCCEEDED"
+    finally:
+        for slot in worker.runners.values():
+            worker.signal_group(slot, signal.SIGKILL)
+            slot.process.wait(timeout=3)
+            slot.close_pipe()
+            slot.logs.close()
+        worker.budget.close()
+        worker.close_notifications()
+
+
+def test_large_final_result_flushes_progress_without_exceeding_http_budget(
+    production_api, store, spec, tmp_path
+):
+    register(store)
+    task = store.submit(spec, "big-final")
+    assignment = store.claim("worker", "big-claim")
+    workspace = tmp_path / "attempt"
+    workspace.mkdir()
+    (workspace / "progress.json").write_text(json.dumps({"message": "x" * 210000}))
+    worker = Worker(
+        f"http://127.0.0.1:{production_api.server_port}", "", tmp_path, tmp_path / "work"
+    )
+    worker.session = "worker"
+    running = Running(
+        assignment, None, workspace, time.monotonic() + 6, SimpleNamespace(tail=lambda: "")
+    )
+    try:
+        response = worker.complete(
+            running,
+            {
+                "state": "SUCCEEDED",
+                "result": {"blob": "x" * 850000},
+                "error": None,
+                "retryable": False,
+            },
+        )
+        assert response["accepted"]
+        final = store.get(task["id"])
+        assert len(final["result"]["blob"]) == 850000
+        assert len(final["attempts"][0]["progress"]["message"]) == 210000
+    finally:
+        worker.budget.close()
+        worker.close_notifications()

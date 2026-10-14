@@ -88,3 +88,5 @@ claims:[{claim_id,assignment}|{claim_id,status,error}]}`。一次有界事务提
 快照年龄与 runtime 采样。离线会话的资源不是当前容量；旧执行器未报告的快照为 null。
 RSS 为监督进程和常驻进程的采样求和，包含共享页，不是 Pod 内存。/proc 不可用返回 null。
 Attempt progress.runner.generation 为槽位唯一身份，和 worker_session 联合区分 Pod/PID 复用。
+
+完成请求可携带最终 progress，与结果在同一事务保存，避免文件在续租期间完成而遗漏终态步骤。结果和最终进度合计最多 1 MB；超过合计额度时执行器先以有效租约保存最终进度，再提交结果。完成幂等哈希只包含结果语义，重放不会改写已保存的终态快照。

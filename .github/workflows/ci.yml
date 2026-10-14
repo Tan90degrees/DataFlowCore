@@ -56,6 +56,7 @@ jobs:
         run: |
           python scripts/benchmark_internal.py --baseline-source .e2e/baseline-0.6 --repetitions 2 --files 16 --interval 2 --idle-seconds 8 --dsn "$DATAFLOW_TEST_DATABASE_URL" --output .e2e/internal-efficiency/default.json
           python scripts/verify_efficiency.py .e2e/internal-efficiency/default.json
+          python -c 'import json; print(json.dumps(json.load(open(".e2e/internal-efficiency/default.json"))["summary"]))'
       - name: Native PostgreSQL and shared-file restore drill
         run: python scripts/verify_backup_restore.py --dsn "$DATAFLOW_TEST_DATABASE_URL" --pg-container "${{ job.services.postgres.id }}"
       - uses: actions/upload-artifact@v4

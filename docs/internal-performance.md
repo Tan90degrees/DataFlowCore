@@ -35,7 +35,10 @@ python scripts/benchmark_internal.py --baseline-source /tmp/dataflowcore-before 
 
 实测数据见 [default.json](benchmarks/internal-efficiency/default.json) 与
 [aggressive.json](benchmarks/internal-efficiency/aggressive.json)。以下为本机 SQLite、CPython 3.14.8t、4 槽位/8 CPU 声明预算的三轮中位数。
-两组分别测默认通信与积极通信，所有样本均单次成功。
+两组分别测默认通信与积极通信，所有样本均单次成功。下面的固定样本来自终态进度补全前的
+优化版本（报告中保留源码摘要），用于说明消除周期等待的机制收益。最终交付代码的
+PostgreSQL 结果以本 PR 最新成功 CI 的 business-performance 产物为准；不同源码的
+测量不可当作同一个样本。
 
 | 通信间隔 | 文件数 | 吞吐：0.6 → 0.7（文件/秒） | 比率 | worker HTTP / 文件 |
 | --- | --- | --- | --- | --- |

@@ -420,16 +420,40 @@ class Worker:
             empty_queue |= assignment is None
         return {r["aid"]: (r, started) for r in result["renewals"]}, empty_queue
 
+    def progress(self, running):
+        progress = self.read_json(running.workspace / "progress.json", {})
+        progress["log_tail"] = running.log_file.tail()
+        while len(canonical(progress)) > 262144 and progress["log_tail"]:
+            progress["log_tail"] = progress["log_tail"][len(progress["log_tail"]) // 2 + 1 :]
+        return progress
+
+    def complete(self, running, payload):
+        # A file can finish while its earlier pulse is in flight. Persist the
+        # final snapshot with the result, rather than that pulse's stale progress.
+        progress = self.progress(running)
+        body = {**self.identity(running), **payload, "progress": progress}
+        if len(canonical(body)) > 1000000:
+            # Big results and diagnostics may each fit but not fit together.
+            # Flush diagnostics with the fenced renewal before the result.
+            started = time.monotonic()
+            renewed = self.request("renew", {**self.identity(running), "progress": progress})
+            with running.lock:
+                if running.invalid:
+                    raise APIError(409, "execution lease is no longer valid")
+                running.deadline = started + renewed["lease_seconds"]
+            if renewed["cancel"]:
+                self.stop_task(running, cancelling=True)
+                return False
+            body.pop("progress")
+        return self.request("complete", body)
+
     def renew_batch(self):
         batches, current, size, hashes = [], [], 0, {}
         for aid, running in list(self.running.items()):
             if running.invalid or time.monotonic() >= running.deadline:
                 self.stop_task(running, invalid=True)
                 continue
-            progress = self.read_json(running.workspace / "progress.json", {})
-            progress["log_tail"] = running.log_file.tail()
-            while len(canonical(progress)) > 262144 and progress["log_tail"]:
-                progress["log_tail"] = progress["log_tail"][len(progress["log_tail"]) // 2 + 1 :]
+            progress = self.progress(running)
             encoded = canonical(progress)
             hashed = hashlib.sha256(encoded.encode()).hexdigest()
             hashes[aid] = hashed
@@ -527,8 +551,8 @@ class Worker:
                 payload = running.payload
                 if running.cancelling:
                     payload = {"state": "CANCELLED", "error": "cancelled", "retryable": False}
-                self.request("complete", {**self.identity(running), **payload})
-                self.clean(aid, running)
+                if self.complete(running, payload):
+                    self.clean(aid, running)
             except APIError as exc:
                 if exc.status in (404, 409):
                     self.stop_task(running, invalid=True)
