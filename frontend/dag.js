@@ -1,14 +1,9 @@
-export function template(version = "0.4.0") {
+export function template(version = "0.5.0") {
   return {
     name: "文本词频统计",
     input_path: "/dataflow/input.txt",
     pool: "default",
     runtime_version: version,
-    dag_workers: 2,
-    io_workers: 16,
-    scheduling: "operator",
-    cpu: 1,
-    memory_mb: 256,
     max_attempts: 3,
     retry_delay: 2,
     timeout: 3600,

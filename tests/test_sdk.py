@@ -14,7 +14,8 @@ def test_sdk_generates_valid_json_without_running_operators(tmp_path):
     spec = plan.spec(tmp_path / "not-yet-existing.txt")
     assert spec["steps"][0]["callable"] == "dataflowcore.operators:read_text"
     assert spec["steps"][1]["depends_on"] == ["read"]
-    assert spec["cpu"] == 2
+    assert "cpu" not in spec
+    assert spec["steps"][0]["resources"]["cpu"] == 2
 
 
 def test_sdk_rejects_local_and_instance_callables():

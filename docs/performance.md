@@ -1,5 +1,44 @@
 # 业务性能验证
 
+## 0.5.0 算子配置与公平准入
+
+本版本移除新任务的 CPU/内存/并发开关，采用资源回填、按文件资源份额公平和老请求
+保护。以下为 2026-10-14 本机 Python 3.14.8t、GIL 关闭、SQLite 的完整六节点入库业务。
+2048 字符文件、HTTP 测试服务每请求等待 10ms、每块并行度 4，2 个执行器各固定 4 个
+常驻槽位，0.1 秒心跳。每次使用新数据库和输入目录，包含提交、排队与查询耗时。
+
+| 指标 | 24 文件，三轮中位数 | 120 文件，单轮预算压力 |
+| --- | ---: | ---: |
+| 每执行器声明预算 | CPU 8 / 2048 MiB | CPU 2 / 1024 MiB |
+| 总耗时 | 0.597 秒 | 2.767 秒 |
+| 吞吐 | 40.23 文件/秒 | 43.36 文件/秒 |
+| 成功 / 尝试数 | 24 / 24 | 120 / 120 |
+| 校验索引行数 | 120 | 600 |
+| 使用的常驻进程 | 8 | 8 |
+
+三轮 24 文件各有 16 个任务复用已执行过文件的槽位。120 文件压力中，共享预留峰值
+为 CPU 2 / 640 MiB，未超过单执行器预算；文件放置门槛为 CPU 1 / 128 MiB，本次
+Attempt 预留峰值最高 CPU 2 / 256 MiB，体现分支并行峰值与单算子放置门槛的区别。
+节点资源等待时间按每文件合计的 P95 为 0.162 秒，产物 SHA256、GIL 状态和索引行数
+均校验通过。每份报告新增 scheduler_policy 和 attempt_resource_peaks；只有算子
+资源的公开配置也纳入断言。原始数据见 [fair-scheduling/summary.json](benchmarks/fair-scheduling/summary.json)。
+
+上述负载用于验证完整业务与预算压力，老请求超过阈值后的行为另由持续小请求回归
+确定性验证：阈值前允许回填，阈值后保护大节点，已有占用释放后大节点先获资源。
+同套回归验证大内存队头回填、低占用文件优先、实际池宽度、取消和进程故障回收。
+PostgreSQL 与真实 kind Pod 故障在 CI 验证，报告作为 workflow 附件。
+
+这是测试向量服务负载；不同预算两列不是性能提升对比，也不把旧版本的加速比例用于
+本轮公平策略。资源声明是准入预算，实际 RSS 和 Pod/cgroup 限额另行观测，生产模型
+和存储必须实测。复现命令：
+
+```bash
+python scripts/business_benchmark.py --files 24 --workers 2 --slots 4 --chars 2048 \
+  --interval .1 --output /tmp/business.json
+python scripts/business_benchmark.py --files 120 --workers 2 --slots 4 --chars 2048 \
+  --interval .1 --worker-cpu 2 --worker-memory-mb 1024 --output /tmp/batch-120.json
+```
+
 ## 0.4.0 算子级调度
 
 同一版本比较显式 `scheduling=task` 与默认 `operator`，固定一个执行器、4 个常驻槽位、

@@ -27,9 +27,11 @@ GET /healthz、/readyz、/version为公开探针；/metrics使用管理员认证
 | POST | /v1/worker/renew | 续租、进度、接收取消 |
 | POST | /v1/worker/complete | 幂等结果提交 |
 
-示例见examples/file_pipeline.json。0.4.0 默认 `scheduling=operator`，节点以
-`workload=cpu/io`、`resources={cpu, memory_mb}` 声明资源，顶层 CPU/内存规范化为
-最大单算子需求。`dag_workers` / `io_workers` 分别限制 CPU / IO 算子并发，详见
+示例见examples/file_pipeline.json。0.5.0 只在节点配置
+`workload=cpu/io`、`resources={cpu, memory_mb}`。公开 spec 不再包含任务 CPU、内存或
+`dag_workers/io_workers`。GET 任务另有只读 `placement`（逐维最大算子需求）和
+`scheduling` 摘要，提交使用 spec，无需复制这些诊断字段；成功结果的 `runtime.peak_resources` 为本次
+Attempt 的预留峰值，可能大于放置门槛。算子并发自动受执行器共享预算与池上限控制，详见
 [算子级资源调度](operator-scheduling.md)。max_attempts包含首次执行，timeout为每次Attempt最长时间，retry_delay
 为初始指数退避。输入SHA256由管控固定，调用者可以提前提供。
 完成/续租字段为tid、aid、session_id、token。领取返回assignment包含task_id、

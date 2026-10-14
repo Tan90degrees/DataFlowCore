@@ -61,6 +61,8 @@ spec:
             - "{{ dig "runnerIoMapWorkers" 16 .Values.worker }}"
             - --io-concurrency
             - "{{ dig "ioConcurrency" 32 .Values.worker }}"
+            - --resource-aging-seconds
+            - "{{ dig "resourceAgingSeconds" 2 .Values.worker }}"
           env:
             - name: DATAFLOW_WORKER_TOKEN
               valueFrom:

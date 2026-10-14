@@ -251,6 +251,7 @@ test("per-operator resource editing, IO bypass and resource-wait cancellation", 
     }).toBe("RUNNING");
     await connect(page);
     await page.getByRole("link", {name: "DAG 编排"}).click();
+    await expect(page.locator('[data-field="cpu"], [data-field="memory_mb"], [data-field="dag_workers"], [data-field="io_workers"]')).toHaveCount(0);
     await page.getByLabel("任务名称").fill("算子预算浏览器验证");
     await page.getByLabel("共享文件绝对路径").fill(input);
     await page.getByLabel("算子类型", {exact: true}).selectOption("io");
@@ -266,8 +267,10 @@ test("per-operator resource editing, IO bypass and resource-wait cancellation", 
     const tid = await submit(page);
     await expect(page.locator(".step-row").filter({hasText: "count"})).toContainText("等待资源");
     const task = await (await request.get(base + `/v1/tasks/${tid}`, {headers})).json();
-    expect(task.spec.scheduling).toBe("operator");
-    expect(task.spec.cpu).toBe(4);
+    expect(task.scheduling).toBe("operator");
+    expect(task.placement.cpu).toBe(4);
+    for (const key of ["cpu", "memory_mb", "dag_workers", "io_workers", "scheduling"])
+      expect(task.spec).not.toHaveProperty(key);
     expect(task.spec.steps.find(s => s.id === "read").resources).toEqual({cpu: 0, memory_mb: 64});
     expect(task.spec.steps.find(s => s.id === "count").resources).toEqual({cpu: 4, memory_mb: 128});
     expect(task.attempts.at(-1).progress.steps.read.state).toBe("SUCCEEDED");

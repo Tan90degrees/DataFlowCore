@@ -190,6 +190,20 @@ def run(
         assert all(t["attempt_count"] == 1 for t in tasks), (
             "unexpected retry in fault-free benchmark"
         )
+        peaks = [t["result"]["runtime"].get("peak_resources") for t in tasks]
+        if all(p is not None for p in peaks) and tasks[0].get("scheduling") == "operator":
+            assert all(
+                not {"cpu", "memory_mb", "dag_workers", "io_workers", "scheduling"}
+                & t["spec"].keys()
+                for t in tasks
+            ), "operator tasks still expose task-level resource configuration"
+            for task, peak in zip(tasks, peaks, strict=True):
+                assert peak["cpu"] >= task["placement"]["cpu"]
+                assert peak["memory_mb"] >= task["placement"]["memory_mb"]
+                assert peak["cpu"] <= (
+                    worker_cpu or max(slots * 2, embedding_workers if cpu_rounds else 1)
+                )
+                assert peak["memory_mb"] <= (worker_memory_mb or slots * 512)
         sessions = {t["attempts"][0]["worker_session"] for t in tasks}
         expected_rows = sum(t["result"]["steps"]["receipt"]["chunks"] for t in tasks)
         with sqlite3.connect(root / "index.sqlite") as conn:
@@ -252,7 +266,9 @@ def run(
                 "embedding_workers": embedding_workers,
                 "cpu_rounds": cpu_rounds,
                 "polling": "batch" if hasattr(client, "statuses") else "individual",
-                "scheduling": tasks[0]["spec"].get("scheduling", "task"),
+                "scheduling": tasks[0].get(
+                    "scheduling", tasks[0]["spec"].get("scheduling", "task")
+                ),
                 "worker_cpu": worker_cpu or max(slots * 2, embedding_workers if cpu_rounds else 1),
                 "worker_memory_mb": worker_memory_mb or slots * 512,
             },
@@ -303,6 +319,12 @@ def run(
                 key: max(t["result"]["runtime"].get("scheduler", {}).get(key, 0) for t in tasks)
                 for key in ("peak_cpu", "peak_memory_mb", "peak_io_operators")
             },
+            "scheduler_policy": tasks[0]["result"]["runtime"].get("scheduler", {}).get("policy"),
+            "attempt_resource_peaks": {
+                key: max(p[key] for p in peaks) for key in ("cpu", "memory_mb")
+            }
+            if all(p is not None for p in peaks)
+            else None,
             "resource_wait_p95_seconds": percentile(
                 [
                     sum(

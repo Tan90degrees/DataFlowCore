@@ -154,12 +154,13 @@ class Store:
 
     def submit(self, spec: TaskSpec, request_key: str):
         spec = TaskSpec.parse(spec.json())
-        encoded = canonical(spec.json())
+        encoded = canonical(spec.storage())
         hashed = fingerprint(spec.json())
         with self.transaction() as db:
             existing = db.one("SELECT * FROM tasks WHERE request_key = ?", (request_key,))
             if existing:
-                if existing["request_hash"] != hashed:
+                previous = TaskSpec.parse({"scheduling": "task", **json.loads(existing["spec"])})
+                if existing["request_hash"] != hashed and fingerprint(previous.json()) != hashed:
                     raise Conflict("idempotency key reused with a different specification")
                 return self.decode_task(existing)
             now, tid = db.now(), uid()
@@ -465,16 +466,34 @@ class Store:
         old = self.get(tid)
         if old["state"] not in ("FAILED", "CANCELLED"):
             raise Conflict("only failed or cancelled tasks can be manually retried")
-        spec = TaskSpec.parse({"scheduling": "task", **old["spec"]})
+        spec = TaskSpec.parse({"scheduling": old["scheduling"], **old["spec"]})
         return self.submit(spec, f"retry:{tid}:{request_key}")
 
     @staticmethod
     def decode_task(row):
-        return {
+        task = {
             k: json.loads(v) if k in ("spec", "result") and v is not None else v
             for k, v in row.items()
             if k not in ("request_hash",)
         }
+        if "spec" in task:
+            spec = task["spec"]
+            task["scheduling"] = spec.get("scheduling", "task")
+            task["placement"] = {key: spec[key] for key in ("cpu", "memory_mb")}
+            if task["scheduling"] == "operator":
+                task["spec"] = {
+                    k: v
+                    for k, v in spec.items()
+                    if k
+                    not in (
+                        "cpu",
+                        "memory_mb",
+                        "dag_workers",
+                        "io_workers",
+                        "scheduling",
+                    )
+                }
+        return task
 
     def get(self, tid):
         with self.transaction(False) as db:
