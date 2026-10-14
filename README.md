@@ -6,9 +6,12 @@ Pod 或节点故障后自动从头重试，暂不支持断点续跑。没有 Ray
 
 ## 已实现
 
-0.6.0 补齐生产基线：维护暂停、任务背压、排队诊断、只读/轮换凭证、管理审计、独立
-探针、按需历史详情、告警、保守失败目录清理与原生备份恢复演练。前端新增「运维」页。
-详见 [工业化 GAP 与验收](docs/production-gaps.md)、[生产运维](docs/production-operations.md)。
+0.7.0 面向工业产品内部组件：批量心跳/续租/领取、PostgreSQL 连接复用、事件驱动的
+常驻槽位派发和完成通知、跨进程资源唤醒、低底噪日志与空闲执行器观测。
+组件不提供权限、身份分级、管理审计或算子白名单，入口由宿主产品接入。
+保留幂等、租约隔离、停止、整文件恢复、维护、背压和业务执行事件。
+详见 [内部组件验收与边界](docs/production-gaps.md)、[生产运维](docs/production-operations.md)、
+[性能对比](docs/internal-performance.md)。
 
 - HTTP 管控 API、Python DAG SDK 和 CLI。
 - JSON DAG 校验、依赖推进、分支并行和数据汇合。
@@ -19,7 +22,7 @@ Pod 或节点故障后自动从头重试，暂不支持断点续跑。没有 Ray
 - 排队取消、协作停止、超时进程组终止、Linux 父进程死亡保护。
 - 运行环境、执行器池、槽位与 CPU/内存预算匹配。
 - 算子级 CPU/内存准入，执行器内所有槽位共享预算；CPU/IO 算子与页块使用独立固定池。
-- 管控与执行器分别认证、输入校验和 SHA256 固定、输出 manifest。
+- 输入校验和 SHA256 固定、输出 manifest、请求与任务身份关联诊断。
 - Python 3.14t 容器、Docker Compose、Helm、真实子进程与 K8S 故障验收。
 - 流式有界的页/块线程并行、批量状态查询、游标分页、执行器排空。
 - 完整文档入库业务案例、故障注入与可复现性能基准。
@@ -41,7 +44,6 @@ source .env
 set +a
 curl -sS http://127.0.0.1:8080/readyz
 curl -sS -X POST http://127.0.0.1:8080/v1/tasks \
-  -H "Authorization: Bearer $DATAFLOW_ADMIN_TOKEN" \
   -H 'Idempotency-Key: demo-file-001' \
   -H 'Content-Type: application/json' \
   --data-binary @examples/file_pipeline.json
@@ -51,7 +53,6 @@ curl -sS -X POST http://127.0.0.1:8080/v1/tasks \
 
 ```bash
 curl -sS "http://127.0.0.1:8080/v1/tasks/<task-id>" \
-  -H "Authorization: Bearer $DATAFLOW_ADMIN_TOKEN"
 ```
 
 输出位于 `data/outputs/<task-id>/<attempt-id>/write.json`。
@@ -79,14 +80,12 @@ CI 验证 psycopg 导入后 GIL 仍关闭。
 本机演示可使用 SQLite（单机开发专用），两个终端分别运行：
 
 ```bash
-export DATAFLOW_ADMIN_TOKEN="$(python -c 'import secrets; print(secrets.token_hex(24))')"
-export DATAFLOW_WORKER_TOKEN="$(python -c 'import secrets; print(secrets.token_hex(24))')"
 mkdir -p data
 printf 'hello world hello\n' > data/input.txt
 dataflow control --data-root "$PWD/data"
 ```
 
-第二个终端设置相同 DATAFLOW_WORKER_TOKEN：
+第二个终端启动执行器：
 
 ```bash
 dataflow worker --data-root "$PWD/data" --slots 2 --cpu 4 --memory-mb 2048
@@ -105,7 +104,7 @@ dataflow workers
 ```
 
 wait 成功返回0，失败/取消返回1。手动重试创建新任务，原记录保留；自动故障重试
-在原任务下追加执行尝试。`--allow-gil`、`--insecure` 仅供开发。
+在原任务下追加执行尝试。`--allow-gil` 仅供开发；旧 `--insecure` 接受但已无鉴权开关作用。
 
 ## 业务 DAG
 
@@ -131,9 +130,7 @@ flow = (
         resources={"cpu": 0.1, "memory_mb": 32},
     )
 )
-task = Client("http://control:8080", "your-admin-token").submit(
-    flow.spec("/dataflow/input.txt"), key="file-001"
-)
+task = Client("http://control:8080").submit(flow.spec("/dataflow/input.txt"), key="file-001")
 ```
 
 算子预装在镜像中，通过 module:symbol 引用，签名为 operator(context, inputs)。
@@ -202,7 +199,7 @@ bash e2e/run.sh
 
 独立静态前端通过 API 管理任务、查看 DAG 进度/日志/事件/结果、停止与重试任务、观察和排空执行器；编排器支持编辑节点与依赖、JSON 导入/导出、API 校验和提交。前后端分别构建、部署，无生产 npm 依赖。
 
-`docker compose up --build -d` 后打开 **http://127.0.0.1:8081**，连接地址使用 `/api`，输入 `.env` 中的管理令牌。Kubernetes 可设置 `console.enabled=true` 启用独立前端 Deployment/Service。
+`docker compose up --build -d` 后打开 **http://127.0.0.1:8081**，连接地址使用 `/api` 即可。Kubernetes 可设置 `console.enabled=true` 启用独立前端 Deployment/Service。
 
 详见 [前端部署、功能边界与浏览器验收](docs/console.md)。
 

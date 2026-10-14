@@ -172,11 +172,19 @@ def run(
                     if task["state"] in ("SUCCEEDED", "FAILED", "CANCELLED"):
                         final[tid] = task
             status_file = Path(f"/proc/{processes[0].pid}/status")
-            if status_file.exists():
-                line = next(
-                    x for x in status_file.read_text().splitlines() if x.startswith("VmRSS:")
-                )
-                peak_control_rss = max(peak_control_rss, int(line.split()[1]) * 1024)
+            try:
+                # Optional sampling must tolerate PID reuse, /proc races and test
+                # runtimes whose subprocess IDs do not map into this /proc view.
+                command = Path(f"/proc/{processes[0].pid}/cmdline").read_bytes()
+                if str(root).encode() in command:
+                    line = next(
+                        (x for x in status_file.read_text().splitlines() if x.startswith("VmRSS:")),
+                        None,
+                    )
+                    if line is not None:
+                        peak_control_rss = max(peak_control_rss, int(line.split()[1]) * 1024)
+            except OSError, ValueError:
+                pass
             time.sleep(0.05)
         elapsed = time.monotonic() - started
         assert len(final) == files, "benchmark timeout"

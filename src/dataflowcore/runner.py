@@ -61,6 +61,8 @@ def runner_main(
     budget_path=None,
     io_workers=16,
     io_map_workers=16,
+    notify_fd=None,
+    completion_fd=None,
 ):
     parent_death_signal(parent_pid)
     if sys.platform == "linux":
@@ -81,23 +83,38 @@ def runner_main(
     )
     completed = None
 
+    def notify_parent():
+        if completion_fd is not None:
+            try:
+                os.write(completion_fd, b"1")
+            except OSError:
+                pass
+
     def shutdown(*_):
         raise SystemExit(0)
 
     try:
-        atomic_json(root / "state.json", {"state": "READY", "pid": os.getpid()})
+        atomic_json(root / "state.json", {"state": "READY", "pid": os.getpid()}, durable=False)
+        notify_parent()
         while True:
             signal.signal(signal.SIGTERM, shutdown)
             signal.signal(signal.SIGINT, shutdown)
+            if notify_fd is not None and not os.read(notify_fd, 1):
+                return
             job_path = root / "job.json"
             try:
                 job = json.loads(job_path.read_text())
             except FileNotFoundError:
-                time.sleep(0.02)
+                if notify_fd is None:
+                    time.sleep(0.1)
                 continue
             job_path.unlink()
             workspace = Path(job["workspace"])
-            atomic_json(root / "state.json", {"state": "BUSY", "attempt_id": job["attempt_id"]})
+            atomic_json(
+                root / "state.json",
+                {"state": "BUSY", "attempt_id": job["attempt_id"]},
+                durable=False,
+            )
             with task_logs(workspace / "task.log"):
                 payload = child_main(
                     workspace / "assignment.json", workspace, data_root, allow_gil, runtime
@@ -118,8 +135,14 @@ def runner_main(
                     "completed_attempt": completed,
                     "completed_tasks": runtime.completed_tasks,
                 },
+                durable=False,
             )
+            notify_parent()
             if retire:
                 return
     finally:
+        if notify_fd is not None:
+            os.close(notify_fd)
+        if completion_fd is not None:
+            os.close(completion_fd)
         runtime.close()

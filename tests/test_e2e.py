@@ -193,13 +193,8 @@ def test_two_executors_run_separate_files_concurrently(cluster):
     cluster.state(second["id"], "SUCCEEDED")
 
 
-def test_auth_roles_and_input_path_validation(cluster):
-    with pytest.raises(APIError) as error:
-        Client(cluster.client.url).request("GET", "/v1/tasks")
-    assert error.value.status == 401
-    with pytest.raises(APIError) as error:
-        Client(cluster.client.url, "w" * 32).request("GET", "/v1/tasks")
-    assert error.value.status == 401
+def test_internal_api_needs_no_credentials_and_checks_input_paths(cluster):
+    assert Client(cluster.client.url).request("GET", "/v1/tasks")
     with pytest.raises(APIError) as error:
         cluster.submit(input_path="/etc/passwd")
     assert error.value.status == 400

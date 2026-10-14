@@ -1,35 +1,30 @@
-# 生产运维（0.6.0）
+# 生产运维（0.7.0）
 
-## 部署与权限
+## 接入和升级
 
 在部署文档基础上使用 charts/dataflowcore/values-production.yaml，替换仓库、Secret、
 PVC 和业务版本。image.digest/console.image.digest 设置后忽略 tag。业务镜像改变时
 runtimeVersion 应标识业务环境，提交 runtime_version 与之相同，重试不替换历史环境。
-先停旧 0.5 管控再升级。命名空间锁只保证单活，不提供主备或无停机升级。
+先停旧管控再升级。命名空间锁只保证单活，不提供主备或无停机升级。
 
 profile 启用两执行器与 PDB，单执行器需关闭或调整 PDB；它不保证节点故障或任意
 Deployment 升级无损，超过终止宽限的长任务仍整文件重试。Ingress 启用时配置实际
 className/host/tlsSecret；NetworkPolicy 启用后控制面只接收 worker/console 与
 controlIngressPeers，直连 API 和监控来源也要加入 peers，业务出站访问不限制。
 
-主要凭证 DATAFLOW_ADMIN_TOKEN、DATAFLOW_WORKER_TOKEN；额外逗号分隔值用
-DATAFLOW_ADMIN_TOKENS、DATAFLOW_WORKER_TOKENS，只读用 DATAFLOW_VIEWER_TOKENS。
-Secret 可选键为 admin-tokens/worker-tokens/viewer-token。值须互不重复、随机、
-24..256 个可打印 ASCII 字符，总数最多 24。更新须重启 Pod，无自动重新载入。
-轮换先让管控接受新旧值，再更新客户端/执行器，等旧执行器排空，最后撤销旧值；
-直接撤销仍续租的旧值会造成整文件恢复。
+组件 API、前端和指标不需要 Bearer 凭证。Secret 只需 database-url，算子代码由
+业务镜像统一交付，没有人员/角色、轮换凭证、审计或包白名单配置。旧环境中的
+admin/worker 参数不再启用鉴权，历史 audit 表保留但不继续写入。
 
-viewer 不可上传、提交、停止、重试、排空、维护，可读部署内全部任务、运维、审计、
-metrics，并可无副作用批量查询/DAG 校验。审计为凭证指纹，非人员身份；业务密钥用
-执行器 Secret/环境配置，不放任务参数。control.operatorModules 限制 API 新提交/
-校验/重试的包前缀，不导入/安装代码，不自动撤销既有批准任务，也不是代码沙箱。
+控制面和前端一起升级。已有 Attempt 的单项续租/完成 API 保持兼容；旧队列的
+runtime_version 不会替换，保留对应业务版本的执行器处理完后再排空。
 
 ## 维护与背压
 
 前端「运维」或 POST /v1/control {"paused":true} 暂停；paused=false 恢复。
 暂停阻止新提交/上传/领取，续租、完成、取消和领取重放可用，已提交同键任务仍返回
 旧记录。暂停持久化并随备份保留。GET /v1/control 的 quiescent=true 是已暂停且
-活跃尝试/上传均为零的当前检查结果，备份窗口仍须协调管理员、外部写卷与清理程序。
+活跃尝试/上传均为零的当前检查结果，备份窗口仍须协调外部写卷与清理程序。
 
 control.maxUnfinished 默认 10000，计算 QUEUED/RUNNING/STOPPING（含退避任务）。
 满额 429，维护拒绝 503，附 Retry-After: 5 与 code；等待后用同一幂等键重试。
@@ -45,13 +40,33 @@ GET /v1/tasks/{id}?attempt={attempt-id} 同时取得所选历史详情，前端�
 列表默认 summary=1；summary=0 每页最多 10 个定义。升级依赖历史完整 payload 的
 客户端时相应调整，批量轮询继续用 statuses。
 
-默认 JSON 日志；X-Request-ID 关联审计和日志，SDK APIError 提供 request_id/code/
-retry_after。指标标签固定，不含任务 ID/文件路径。任务/尝试数量为 gauge，HTTP
-counter/histogram 属于进程生命周期，重启重置。monitoring.enabled=true 生成
-ServiceMonitor 和五条告警，需 CRD、monitoring.labels 与可用 viewer-token。
-Pod CPU/RSS/OOM、卷、DB 与模型服务由平台监控；声明预算不等于 RSS。
-healthz 检查进程，readyz 检查数据库和恢复扫描。执行器独立发布健康信息，网络等待
-影响 readiness，不停止安全线程。PG 语句默认超时 5000ms，锁等待最多 2 秒。
+默认 JSON 日志，成功 HTTP 轮询属于 DEBUG，通过 DATAFLOW_LOG_LEVEL=DEBUG 临时
+打开。重复控制连接/恢复扫描故障首次保留诊断，之后至多每 30 秒一条，恢复时一条
+恢复记录。HTTP 请求量/时延、组件错误计数持续累计，不因日志限频丢失故障数量。
+SDK APIError 提供 request_id/code/retry_after。任务启动日志包含 task_id、attempt_id、
+worker_session 和 runner_id；详情中的 generation 区分不同 Pod/槽位和 PID 复用。
+
+空闲执行器同样报告 scheduler。free_slots 由数据库活跃 Attempt 统计，不依赖可能
+滞后的本机 busy 标记。快照是采样，需同时看 online/telemetry_age_seconds；离线
+快照不是当前占用。sampled_rss_mb 是监督进程和常驻进程 RSS 求和，包含共享页，
+/proc 不可用为 null，Pod 实际内存以 cgroup/平台数据为准。
+
+PG 连接池按需增长到 16，保留 1 个，空闲 60 秒收缩；只有 1 个连接维护工作线程。
+连接等待有界，损坏连接替换，超额/数据库故障返回可重试错误；DB 所有权连接丢失
+仍停止管控，不依赖连接池重连掩盖独占锁丢失。语句默认超时 5000ms，锁等待最多
+2 秒。运维页和 /metrics 展示连接数、可用连接、等待请求与累计等待时间。
+
+指标标签固定，不含任务 ID/文件路径；任务/尝试数量、可用槽位、声明 CPU/内存占用、
+算子运行/等待为 gauge。HTTP、组件错误和池计数随进程重启重置，不能用于历史审计。
+monitoring.enabled=true 生成 ServiceMonitor 和告警，需平台提供 CRD/选择标签。
+healthz 检查进程，readyz 检查数据库和恢复扫描。执行器独立健康与租约看门狗，不受
+批量网络等待阻塞；健康快照 2 秒刷新，不 fsync。新增文件最长领取等待受 interval
+影响，已运行文件的完成通知和槽位复用不等待 interval。
+
+调优先查看队列阻塞原因、资源等待、空闲槽位、池等待与真实 Pod CPU/RSS。只在资源
+预算允许、模型缓存/基线内存有余量时增加 slots；IO 长等待场景通常需要多个文件
+并行，CPU 饱和时扩大文件槽位不会增加算力。interval 控制心跳/进度底噪，不用于
+提高短任务完成吞吐。业务依赖和本地缓存仍固定，不逐任务启动算子 worker。
 
 ## 失败目录清理
 
@@ -64,7 +79,7 @@ dataflow gc-failed-outputs --dsn "$DATAFLOW_DATABASE_URL" \
 ```
 
 只处理有元数据、所属任务终态、Attempt 为 FAILED/CANCELLED/LOST 且过期的目录。
-输入、成功引用、链接、非目录受保护。删除/确认不存在后记录标记与审计，重复运行
+输入、成功引用、链接、非目录受保护。删除/确认不存在后记录清理标记，重复运行
 跳过；删后 DB 写入失败可重跑补标记。未知孤儿目录不自动删。任务/尝试、成功产物
 与输入不删除，避免破坏手动重试，另行设计归档策略。
 

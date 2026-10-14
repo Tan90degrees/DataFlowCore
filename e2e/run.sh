@@ -29,11 +29,9 @@ kind load docker-image dataflowcore:e2e dataflowcore-console:e2e --name dataflow
 kubectl apply -f e2e/infrastructure.yaml
 kubectl rollout status deployment/postgres --timeout=180s
 kubectl rollout status deployment/embedding-fixture --timeout=180s
-# Credentials are fixture values for a disposable isolated cluster.
+# Database credentials are fixture values for an isolated cluster.
 kubectl create secret generic dataflowcore-secrets \
-  --from-literal=database-url=postgresql://dataflow:dataflow-test@postgres:5432/dataflow \
-  --from-literal=admin-token=e2e-admin-token-00000000000000000 \
-  --from-literal=worker-token=e2e-worker-token-0000000000000000
+  --from-literal=database-url=postgresql://dataflow:dataflow-test@postgres:5432/dataflow
 helm upgrade --install dataflowcore charts/dataflowcore \
   --set image.repository=dataflowcore --set image.tag=e2e \
   --set console.enabled=true --set console.image.repository=dataflowcore-console --set console.image.tag=e2e \
@@ -46,7 +44,6 @@ forward_pid=$!
 kubectl port-forward service/dataflowcore-console 18082:8080 > .e2e/console-forward.log 2>&1 &
 console_forward_pid=$!
 trap 'kill "$forward_pid" "$console_forward_pid" 2>/dev/null || true' EXIT
-export DATAFLOW_ADMIN_TOKEN=e2e-admin-token-00000000000000000
 PYTHONPATH=src python e2e/verify.py
 
 PYTHONPATH=src python e2e/verify_console.py

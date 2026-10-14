@@ -53,13 +53,14 @@ def file_hash(path):
     return digest.hexdigest()
 
 
-def atomic_json(path, value):
+def atomic_json(path, value, *, durable=True):
     path = Path(path)
     temp = path.with_suffix(".tmp")
     with temp.open("w") as stream:
         stream.write(canonical(value))
         stream.flush()
-        os.fsync(stream.fileno())
+        if durable:
+            os.fsync(stream.fileno())
     os.replace(temp, path)
 
 
@@ -262,6 +263,7 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
     runtime_info = require_free_threading(allow_gil)
     runtime_info["runner"] = {
         "pid": os.getpid(),
+        "generation": runtime.owner,
         "tasks_before": runtime.completed_tasks,
         "dag_workers": runtime.dag_workers,
         "map_workers": runtime.map_workers,
@@ -357,7 +359,8 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
                 for step in spec.steps:
                     if not step.get("depends_on"):
                         waiting_for(step, "Waiting for task resources")
-                if cancelled.wait(0.05):
+                runtime.budget.wait()
+                if cancelled.is_set():
                     raise Cancelled("task cancellation requested")
         while len(results) < len(spec.steps):
             if cancelled.is_set():
@@ -368,7 +371,7 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
                 if s["id"] not in submitted and set(s.get("depends_on", [])) <= results.keys()
             ]
             grants = set()
-            if spec.scheduling == "operator":
+            if spec.scheduling == "operator" and ready_steps:
                 grants = runtime.budget.schedule(
                     runtime.owner,
                     [
@@ -393,13 +396,17 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
                     ready(step)
                     pool = runtime.io if kind == "io" else runtime.dag
                     future = pool.submit(execute, step, {d: results[d] for d in deps})
+                    future.add_done_callback(lambda _: runtime.budget.wake())
                     running[future] = step
                     submitted.add(step["id"])
             if not running:
-                cancelled.wait(0.05)
+                runtime.budget.wait()
                 progress.update()
                 continue
-            done, _ = wait(running, timeout=0.1, return_when=FIRST_COMPLETED)
+            done, _ = wait(running, timeout=0, return_when=FIRST_COMPLETED)
+            if not done:
+                runtime.budget.wait()
+                done, _ = wait(running, timeout=0, return_when=FIRST_COMPLETED)
             for future in done:
                 step = running.pop(future)
                 results[step["id"]] = future.result()

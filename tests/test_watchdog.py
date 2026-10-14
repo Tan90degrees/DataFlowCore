@@ -15,6 +15,9 @@ class Logs:
     def tail(self):
         return ""
 
+    def close(self):
+        pass
+
 
 def test_independent_watchdog_kills_live_task_during_blocked_network(tmp_path):
     worker = Worker("http://127.0.0.1:1", "w" * 32, tmp_path, tmp_path / "work", stop_grace=0.1)
@@ -32,11 +35,13 @@ def test_independent_watchdog_kills_live_task_during_blocked_network(tmp_path):
     blocked = threading.Event()
 
     def request(endpoint, data):
-        if endpoint == "heartbeat":
-            return {}
-        if endpoint == "renew":
+        if endpoint == "pulse":
             blocked.wait(5)
-            return {"lease_seconds": 30, "cancel": False}
+            return {
+                "draining": False,
+                "claims": [],
+                "renewals": [{"aid": "attempt", "lease_seconds": 30, "cancel": False}],
+            }
         raise AssertionError(endpoint)
 
     worker.request = request
@@ -84,13 +89,16 @@ def test_escaped_unicode_log_tail_cannot_break_lease_renewal(tmp_path):
     renewed = []
 
     def request(endpoint, data):
-        if endpoint == "heartbeat":
-            return {}
-        assert endpoint == "renew"
-        assert len(canonical(data["progress"])) <= 262144
-        assert data["progress"]["log_tail"]
+        assert endpoint == "pulse"
+        progress = data["renewals"][0]["progress"]
+        assert len(canonical(progress)) <= 262144
+        assert progress["log_tail"]
         renewed.append(True)
-        return {"lease_seconds": 30, "cancel": False}
+        return {
+            "draining": False,
+            "claims": [],
+            "renewals": [{"aid": "attempt", "lease_seconds": 30, "cancel": False}],
+        }
 
     worker.request = request
     try:

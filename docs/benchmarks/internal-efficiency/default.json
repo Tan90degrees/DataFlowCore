@@ -1,0 +1,867 @@
+{
+  "configuration": {
+    "files": 24,
+    "interval": 2.0,
+    "repetitions": 3,
+    "idle_seconds": 8.0,
+    "business_store": "sqlite"
+  },
+  "summary": {
+    "baseline": {
+      "idle_requests": 76,
+      "idle_log_bytes": 15960,
+      "files_per_second": 1.6504838931900534,
+      "worker_requests_per_file": 3.4166666666666665
+    },
+    "candidate": {
+      "idle_requests": 39,
+      "idle_log_bytes": 0,
+      "files_per_second": 27.993910890491946,
+      "worker_requests_per_file": 2.5416666666666665
+    }
+  },
+  "trials": {
+    "baseline": [
+      {
+        "idle": {
+          "version": "0.6.0",
+          "runtime": {
+            "python": "3.14.8 free-threading build (main, Oct  3 2026, 01:06:51) [Clang 22.1.3 ]",
+            "free_threaded_build": true,
+            "gil_enabled": false
+          },
+          "source_digest": "4cd80a673de5734d16ae866f2803a5bc4ec5bdd2942c2a6a0dd45a5634352298",
+          "sample": "idle",
+          "result": {
+            "seconds": 8.000121408999803,
+            "worker_http_requests": 76,
+            "log_bytes": 15960,
+            "cpu_seconds": null,
+            "idle_workers": [
+              {
+                "session_id": "284fc897-cb5d-4228-ba71-915d596c6b86",
+                "name": "373c4abf9fb8",
+                "pool": "default",
+                "runtime_version": "0.6.0",
+                "slots": 4,
+                "cpu": 2,
+                "memory_mb": 1024,
+                "last_seen": 1791988375.9960146,
+                "draining": 0,
+                "online": true,
+                "scheduler": null
+              }
+            ],
+            "configuration": {
+              "slots": 4,
+              "interval_seconds": 0.2,
+              "lease_seconds": 3
+            }
+          }
+        },
+        "business": {
+          "version": "0.6.0",
+          "runtime": {
+            "python": "3.14.8 free-threading build (main, Oct  3 2026, 01:06:51) [Clang 22.1.3 ]",
+            "free_threaded_build": true,
+            "gil_enabled": false
+          },
+          "source_digest": "4cd80a673de5734d16ae866f2803a5bc4ec5bdd2942c2a6a0dd45a5634352298",
+          "sample": "business",
+          "result": {
+            "runtime": {
+              "python": "3.14.8 free-threading build (main, Oct  3 2026, 01:06:51) [Clang 22.1.3 ]",
+              "free_threaded_build": true,
+              "gil_enabled": false
+            },
+            "package_version": "0.6.0",
+            "run_id": "7faec555e0ab48f6b7a2c4f19ac1fc1e",
+            "measured_at_utc": "2026-10-14T14:33:11Z",
+            "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+            "logical_cpus": 9,
+            "affinity_cpus": 9,
+            "cpu_quota": "800000 100000",
+            "source_digest": "bcdf7dbccd1873af51a240b391cec5ad2c8c55c6225d3ff668bdb81c880f3b7f",
+            "business_source_digest": "95098214d6a35bcbc300a9f3122f2c05a667f3f74e339ceda42118c61c3096c8",
+            "baseline_revision": null,
+            "config": {
+              "files": 24,
+              "workers": 1,
+              "slots": 4,
+              "interval": 2.0,
+              "characters_per_file": 2048,
+              "fixture_http_delay_seconds": 0.005,
+              "store": "sqlite",
+              "embedding_workers": 4,
+              "cpu_rounds": 0,
+              "polling": "batch",
+              "scheduling": "operator",
+              "worker_cpu": 8,
+              "worker_memory_mb": 2048
+            },
+            "elapsed_seconds": 14.541190070999619,
+            "files_per_second": 1.6504838931900534,
+            "chunks_per_second": 8.252419465950267,
+            "submit_p95_ms": 5.950740000116639,
+            "query_p95_ms": 21.431316999951378,
+            "queue_p50_ms": 6137.001514434814,
+            "queue_p95_ms": 12285.027027130127,
+            "execution_p95_ms": 2068.988800048828,
+            "used_executors": 1,
+            "runner_processes_used": 4,
+            "runner_reused_tasks": 20,
+            "rss_scope": "runner_lifetime",
+            "successful_files": 24,
+            "validated_index_rows": 120,
+            "attempts": 24,
+            "poll_requests": 225,
+            "control_peak_sampled_rss_bytes": null,
+            "fixture_peak_http_requests": 12,
+            "task_peak_rss_bytes": 43708416,
+            "task_cpu_seconds": 1.111974,
+            "step_p95_seconds": {
+              "parse": 0.0038084983825683594,
+              "chunk": 0.003537416458129883,
+              "stats": 0.0030715465545654297,
+              "embed": 0.03688931465148926,
+              "index": 0.003760814666748047,
+              "receipt": 0.0011358261108398438
+            },
+            "scheduler_peaks": {
+              "peak_cpu": 4.2,
+              "peak_memory_mb": 768,
+              "peak_io_operators": 4
+            },
+            "scheduler_policy": "fair_backfill_with_aging",
+            "attempt_resource_peaks": {
+              "cpu": 2.0,
+              "memory_mb": 256
+            },
+            "resource_wait_p95_seconds": 0,
+            "worker_requests_by_route": {
+              "worker_claim": 25,
+              "worker_complete": 24,
+              "worker_heartbeat": 8,
+              "worker_register": 1,
+              "worker_renew": 24
+            },
+            "database_pool": null
+          }
+        }
+      },
+      {
+        "idle": {
+          "version": "0.6.0",
+          "runtime": {
+            "python": "3.14.8 free-threading build (main, Oct  3 2026, 01:06:51) [Clang 22.1.3 ]",
+            "free_threaded_build": true,
+            "gil_enabled": false
+          },
+          "source_digest": "4cd80a673de5734d16ae866f2803a5bc4ec5bdd2942c2a6a0dd45a5634352298",
+          "sample": "idle",
+          "result": {
+            "seconds": 8.000254249000136,
+            "worker_http_requests": 74,
+            "log_bytes": 15540,
+            "cpu_seconds": null,
+            "idle_workers": [
+              {
+                "session_id": "f2ec038c-7b6e-40b3-94fe-47cf5750042f",
+                "name": "373c4abf9fb8",
+                "pool": "default",
+                "runtime_version": "0.6.0",
+                "slots": 4,
+                "cpu": 2,
+                "memory_mb": 1024,
+                "last_seen": 1791988416.2260115,
+                "draining": 0,
+                "online": true,
+                "scheduler": null
+              }
+            ],
+            "configuration": {
+              "slots": 4,
+              "interval_seconds": 0.2,
+              "lease_seconds": 3
+            }
+          }
+        },
+        "business": {
+          "version": "0.6.0",
+          "runtime": {
+            "python": "3.14.8 free-threading build (main, Oct  3 2026, 01:06:51) [Clang 22.1.3 ]",
+            "free_threaded_build": true,
+            "gil_enabled": false
+          },
+          "source_digest": "4cd80a673de5734d16ae866f2803a5bc4ec5bdd2942c2a6a0dd45a5634352298",
+          "sample": "business",
+          "result": {
+            "runtime": {
+              "python": "3.14.8 free-threading build (main, Oct  3 2026, 01:06:51) [Clang 22.1.3 ]",
+              "free_threaded_build": true,
+              "gil_enabled": false
+            },
+            "package_version": "0.6.0",
+            "run_id": "4074cf8c45c74f98b5a1c24bc62902d3",
+            "measured_at_utc": "2026-10-14T14:33:53Z",
+            "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+            "logical_cpus": 9,
+            "affinity_cpus": 9,
+            "cpu_quota": "800000 100000",
+            "source_digest": "bcdf7dbccd1873af51a240b391cec5ad2c8c55c6225d3ff668bdb81c880f3b7f",
+            "business_source_digest": "95098214d6a35bcbc300a9f3122f2c05a667f3f74e339ceda42118c61c3096c8",
+            "baseline_revision": null,
+            "config": {
+              "files": 24,
+              "workers": 1,
+              "slots": 4,
+              "interval": 2.0,
+              "characters_per_file": 2048,
+              "fixture_http_delay_seconds": 0.005,
+              "store": "sqlite",
+              "embedding_workers": 4,
+              "cpu_rounds": 0,
+              "polling": "batch",
+              "scheduling": "operator",
+              "worker_cpu": 8,
+              "worker_memory_mb": 2048
+            },
+            "elapsed_seconds": 15.946497451000141,
+            "files_per_second": 1.505032692837182,
+            "chunks_per_second": 7.525163464185909,
+            "submit_p95_ms": 8.12376699923334,
+            "query_p95_ms": 14.020687000083853,
+            "queue_p50_ms": 7582.980394363403,
+            "queue_p95_ms": 13671.018123626709,
+            "execution_p95_ms": 2922.0118522644043,
+            "used_executors": 1,
+            "runner_processes_used": 4,
+            "runner_reused_tasks": 20,
+            "rss_scope": "runner_lifetime",
+            "successful_files": 24,
+            "validated_index_rows": 120,
+            "attempts": 24,
+            "poll_requests": 229,
+            "control_peak_sampled_rss_bytes": null,
+            "fixture_peak_http_requests": 10,
+            "task_peak_rss_bytes": 44056576,
+            "task_cpu_seconds": 1.4253010000000017,
+            "step_p95_seconds": {
+              "parse": 0.007455587387084961,
+              "chunk": 0.007047414779663086,
+              "stats": 0.004280805587768555,
+              "embed": 0.041269779205322266,
+              "index": 0.005957603454589844,
+              "receipt": 0.0033555030822753906
+            },
+            "scheduler_peaks": {
+              "peak_cpu": 6.0,
+              "peak_memory_mb": 768,
+              "peak_io_operators": 4
+            },
+            "scheduler_policy": "fair_backfill_with_aging",
+            "attempt_resource_peaks": {
+              "cpu": 2.0,
+              "memory_mb": 256
+            },
+            "resource_wait_p95_seconds": 0,
+            "worker_requests_by_route": {
+              "worker_claim": 25,
+              "worker_complete": 24,
+              "worker_heartbeat": 8,
+              "worker_register": 1,
+              "worker_renew": 24
+            },
+            "database_pool": null
+          }
+        }
+      },
+      {
+        "idle": {
+          "version": "0.6.0",
+          "runtime": {
+            "python": "3.14.8 free-threading build (main, Oct  3 2026, 01:06:51) [Clang 22.1.3 ]",
+            "free_threaded_build": true,
+            "gil_enabled": false
+          },
+          "source_digest": "4cd80a673de5734d16ae866f2803a5bc4ec5bdd2942c2a6a0dd45a5634352298",
+          "sample": "idle",
+          "result": {
+            "seconds": 8.000306509999973,
+            "worker_http_requests": 76,
+            "log_bytes": 15960,
+            "cpu_seconds": null,
+            "idle_workers": [
+              {
+                "session_id": "a032214d-6294-4080-99ba-f1790a02b779",
+                "name": "373c4abf9fb8",
+                "pool": "default",
+                "runtime_version": "0.6.0",
+                "slots": 4,
+                "cpu": 2,
+                "memory_mb": 1024,
+                "last_seen": 1791988456.4420075,
+                "draining": 0,
+                "online": true,
+                "scheduler": null
+              }
+            ],
+            "configuration": {
+              "slots": 4,
+              "interval_seconds": 0.2,
+              "lease_seconds": 3
+            }
+          }
+        },
+        "business": {
+          "version": "0.6.0",
+          "runtime": {
+            "python": "3.14.8 free-threading build (main, Oct  3 2026, 01:06:51) [Clang 22.1.3 ]",
+            "free_threaded_build": true,
+            "gil_enabled": false
+          },
+          "source_digest": "4cd80a673de5734d16ae866f2803a5bc4ec5bdd2942c2a6a0dd45a5634352298",
+          "sample": "business",
+          "result": {
+            "runtime": {
+              "python": "3.14.8 free-threading build (main, Oct  3 2026, 01:06:51) [Clang 22.1.3 ]",
+              "free_threaded_build": true,
+              "gil_enabled": false
+            },
+            "package_version": "0.6.0",
+            "run_id": "f1fac73680914deb81258d8cf5c6e33a",
+            "measured_at_utc": "2026-10-14T14:34:32Z",
+            "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+            "logical_cpus": 9,
+            "affinity_cpus": 9,
+            "cpu_quota": "800000 100000",
+            "source_digest": "bcdf7dbccd1873af51a240b391cec5ad2c8c55c6225d3ff668bdb81c880f3b7f",
+            "business_source_digest": "95098214d6a35bcbc300a9f3122f2c05a667f3f74e339ceda42118c61c3096c8",
+            "baseline_revision": null,
+            "config": {
+              "files": 24,
+              "workers": 1,
+              "slots": 4,
+              "interval": 2.0,
+              "characters_per_file": 2048,
+              "fixture_http_delay_seconds": 0.005,
+              "store": "sqlite",
+              "embedding_workers": 4,
+              "cpu_rounds": 0,
+              "polling": "batch",
+              "scheduling": "operator",
+              "worker_cpu": 8,
+              "worker_memory_mb": 2048
+            },
+            "elapsed_seconds": 14.470507252000061,
+            "files_per_second": 1.6585458672627256,
+            "chunks_per_second": 8.292729336313627,
+            "submit_p95_ms": 17.778901999918162,
+            "query_p95_ms": 6.90560800012463,
+            "queue_p50_ms": 6023.986577987671,
+            "queue_p95_ms": 12075.009822845459,
+            "execution_p95_ms": 2046.9813346862793,
+            "used_executors": 1,
+            "runner_processes_used": 4,
+            "runner_reused_tasks": 20,
+            "rss_scope": "runner_lifetime",
+            "successful_files": 24,
+            "validated_index_rows": 120,
+            "attempts": 24,
+            "poll_requests": 261,
+            "control_peak_sampled_rss_bytes": null,
+            "fixture_peak_http_requests": 11,
+            "task_peak_rss_bytes": 43782144,
+            "task_cpu_seconds": 0.8689069999999997,
+            "step_p95_seconds": {
+              "parse": 0.0027670860290527344,
+              "chunk": 0.007033824920654297,
+              "stats": 0.005032777786254883,
+              "embed": 0.05504488945007324,
+              "index": 0.005757808685302734,
+              "receipt": 0.0026683807373046875
+            },
+            "scheduler_peaks": {
+              "peak_cpu": 6.1,
+              "peak_memory_mb": 896,
+              "peak_io_operators": 4
+            },
+            "scheduler_policy": "fair_backfill_with_aging",
+            "attempt_resource_peaks": {
+              "cpu": 2.0,
+              "memory_mb": 256
+            },
+            "resource_wait_p95_seconds": 0,
+            "worker_requests_by_route": {
+              "worker_claim": 25,
+              "worker_complete": 24,
+              "worker_heartbeat": 8,
+              "worker_register": 1,
+              "worker_renew": 24
+            },
+            "database_pool": null
+          }
+        }
+      }
+    ],
+    "candidate": [
+      {
+        "idle": {
+          "version": "0.7.0",
+          "runtime": {
+            "python": "3.14.8 free-threading build (main, Oct  3 2026, 01:06:51) [Clang 22.1.3 ]",
+            "free_threaded_build": true,
+            "gil_enabled": false
+          },
+          "source_digest": "229f33cef84d7071165da4da54a3789f443bf988cb2eabd1521679aaa99f73db",
+          "sample": "idle",
+          "result": {
+            "seconds": 8.000185507999959,
+            "worker_http_requests": 37,
+            "log_bytes": 0,
+            "cpu_seconds": null,
+            "idle_workers": [
+              {
+                "session_id": "eea4a05b-aa45-4266-a886-49826096b742",
+                "name": "373c4abf9fb8",
+                "pool": "default",
+                "runtime_version": "0.7.0",
+                "slots": 4,
+                "cpu": 2,
+                "memory_mb": 1024,
+                "last_seen": 1791988404.16798,
+                "draining": 0,
+                "online": true,
+                "active_tasks": 0,
+                "free_slots": 4,
+                "telemetry_age_seconds": 0.009012222290039062,
+                "scheduler": {
+                  "active_operators": 0,
+                  "aging_seconds": 2.0,
+                  "cpu": 0.0,
+                  "cpu_capacity": 2.0,
+                  "io_concurrency": 32,
+                  "io_operators": 0,
+                  "memory_capacity_mb": 1024,
+                  "memory_mb": 0,
+                  "oldest_wait_seconds": 0,
+                  "peak_cpu": 0.0,
+                  "peak_io_operators": 0,
+                  "peak_memory_mb": 0,
+                  "policy": "fair_backfill_with_aging",
+                  "waiting_operators": 0
+                },
+                "runtime": {
+                  "processes": 5,
+                  "runner_processes": 4,
+                  "sampled_at": 1791988402.1687346,
+                  "sampled_rss_mb": null
+                }
+              }
+            ],
+            "configuration": {
+              "slots": 4,
+              "interval_seconds": 0.2,
+              "lease_seconds": 3
+            }
+          }
+        },
+        "business": {
+          "version": "0.7.0",
+          "runtime": {
+            "python": "3.14.8 free-threading build (main, Oct  3 2026, 01:06:51) [Clang 22.1.3 ]",
+            "free_threaded_build": true,
+            "gil_enabled": false
+          },
+          "source_digest": "229f33cef84d7071165da4da54a3789f443bf988cb2eabd1521679aaa99f73db",
+          "sample": "business",
+          "result": {
+            "runtime": {
+              "python": "3.14.8 free-threading build (main, Oct  3 2026, 01:06:51) [Clang 22.1.3 ]",
+              "free_threaded_build": true,
+              "gil_enabled": false
+            },
+            "package_version": "0.7.0",
+            "run_id": "fe087ad3c8bd4d81a1de911c7ee7a86f",
+            "measured_at_utc": "2026-10-14T14:33:26Z",
+            "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+            "logical_cpus": 9,
+            "affinity_cpus": 9,
+            "cpu_quota": "800000 100000",
+            "source_digest": "0a3bbf35bd5f958bb480e867687f42187ff579b82ccacaabc240d4804dd5ac5a",
+            "business_source_digest": "95098214d6a35bcbc300a9f3122f2c05a667f3f74e339ceda42118c61c3096c8",
+            "baseline_revision": null,
+            "config": {
+              "files": 24,
+              "workers": 1,
+              "slots": 4,
+              "interval": 2.0,
+              "characters_per_file": 2048,
+              "fixture_http_delay_seconds": 0.005,
+              "store": "sqlite",
+              "embedding_workers": 4,
+              "cpu_rounds": 0,
+              "polling": "batch",
+              "scheduling": "operator",
+              "worker_cpu": 8,
+              "worker_memory_mb": 2048
+            },
+            "elapsed_seconds": 0.719319615999666,
+            "files_per_second": 33.36486238686301,
+            "chunks_per_second": 166.82431193431506,
+            "submit_p95_ms": 12.345800000730378,
+            "query_p95_ms": 4.296049999538809,
+            "queue_p50_ms": 256.9692134857178,
+            "queue_p95_ms": 384.02533531188965,
+            "execution_p95_ms": 67.9941177368164,
+            "used_executors": 1,
+            "runner_processes_used": 4,
+            "runner_reused_tasks": 20,
+            "rss_scope": "runner_lifetime",
+            "successful_files": 24,
+            "validated_index_rows": 120,
+            "attempts": 24,
+            "poll_requests": 8,
+            "control_peak_sampled_rss_bytes": null,
+            "fixture_peak_http_requests": 11,
+            "task_peak_rss_bytes": 44609536,
+            "task_cpu_seconds": 0.6780179999999999,
+            "step_p95_seconds": {
+              "parse": 0.0032236576080322266,
+              "chunk": 0.004362344741821289,
+              "stats": 0.00345611572265625,
+              "embed": 0.026153087615966797,
+              "index": 0.003968000411987305,
+              "receipt": 0.0019290447235107422
+            },
+            "scheduler_peaks": {
+              "peak_cpu": 6.1,
+              "peak_memory_mb": 896,
+              "peak_io_operators": 4
+            },
+            "scheduler_policy": "fair_backfill_with_aging",
+            "attempt_resource_peaks": {
+              "cpu": 2.0,
+              "memory_mb": 256
+            },
+            "resource_wait_p95_seconds": 0,
+            "worker_requests_by_route": {
+              "worker_complete": 24,
+              "worker_pulse": 33,
+              "worker_register": 1
+            },
+            "database_pool": {
+              "backend": "sqlite",
+              "pool": {}
+            }
+          }
+        }
+      },
+      {
+        "idle": {
+          "version": "0.7.0",
+          "runtime": {
+            "python": "3.14.8 free-threading build (main, Oct  3 2026, 01:06:51) [Clang 22.1.3 ]",
+            "free_threaded_build": true,
+            "gil_enabled": false
+          },
+          "source_digest": "229f33cef84d7071165da4da54a3789f443bf988cb2eabd1521679aaa99f73db",
+          "sample": "idle",
+          "result": {
+            "seconds": 8.00012118199993,
+            "worker_http_requests": 39,
+            "log_bytes": 0,
+            "cpu_seconds": null,
+            "idle_workers": [
+              {
+                "session_id": "5f89bbdb-1f8f-465e-bbd1-5ed2c6acb830",
+                "name": "373c4abf9fb8",
+                "pool": "default",
+                "runtime_version": "0.7.0",
+                "slots": 4,
+                "cpu": 2,
+                "memory_mb": 1024,
+                "last_seen": 1791988444.675988,
+                "draining": 0,
+                "online": true,
+                "active_tasks": 0,
+                "free_slots": 4,
+                "telemetry_age_seconds": 0.019995927810668945,
+                "scheduler": {
+                  "active_operators": 0,
+                  "aging_seconds": 2.0,
+                  "cpu": 0.0,
+                  "cpu_capacity": 2.0,
+                  "io_concurrency": 32,
+                  "io_operators": 0,
+                  "memory_capacity_mb": 1024,
+                  "memory_mb": 0,
+                  "oldest_wait_seconds": 0,
+                  "peak_cpu": 0.0,
+                  "peak_io_operators": 0,
+                  "peak_memory_mb": 0,
+                  "policy": "fair_backfill_with_aging",
+                  "waiting_operators": 0
+                },
+                "runtime": {
+                  "processes": 5,
+                  "runner_processes": 4,
+                  "sampled_at": 1791988444.6611068,
+                  "sampled_rss_mb": null
+                }
+              }
+            ],
+            "configuration": {
+              "slots": 4,
+              "interval_seconds": 0.2,
+              "lease_seconds": 3
+            }
+          }
+        },
+        "business": {
+          "version": "0.7.0",
+          "runtime": {
+            "python": "3.14.8 free-threading build (main, Oct  3 2026, 01:06:51) [Clang 22.1.3 ]",
+            "free_threaded_build": true,
+            "gil_enabled": false
+          },
+          "source_digest": "229f33cef84d7071165da4da54a3789f443bf988cb2eabd1521679aaa99f73db",
+          "sample": "business",
+          "result": {
+            "runtime": {
+              "python": "3.14.8 free-threading build (main, Oct  3 2026, 01:06:51) [Clang 22.1.3 ]",
+              "free_threaded_build": true,
+              "gil_enabled": false
+            },
+            "package_version": "0.7.0",
+            "run_id": "64da459f66c94619a6fd9383342d7ced",
+            "measured_at_utc": "2026-10-14T14:34:06Z",
+            "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+            "logical_cpus": 9,
+            "affinity_cpus": 9,
+            "cpu_quota": "800000 100000",
+            "source_digest": "0a3bbf35bd5f958bb480e867687f42187ff579b82ccacaabc240d4804dd5ac5a",
+            "business_source_digest": "95098214d6a35bcbc300a9f3122f2c05a667f3f74e339ceda42118c61c3096c8",
+            "baseline_revision": null,
+            "config": {
+              "files": 24,
+              "workers": 1,
+              "slots": 4,
+              "interval": 2.0,
+              "characters_per_file": 2048,
+              "fixture_http_delay_seconds": 0.005,
+              "store": "sqlite",
+              "embedding_workers": 4,
+              "cpu_rounds": 0,
+              "polling": "batch",
+              "scheduling": "operator",
+              "worker_cpu": 8,
+              "worker_memory_mb": 2048
+            },
+            "elapsed_seconds": 0.8573292989995025,
+            "files_per_second": 27.993910890491946,
+            "chunks_per_second": 139.96955445245973,
+            "submit_p95_ms": 21.44794199921307,
+            "query_p95_ms": 14.216327000212914,
+            "queue_p50_ms": 371.0298538208008,
+            "queue_p95_ms": 459.01989936828613,
+            "execution_p95_ms": 79.01763916015625,
+            "used_executors": 1,
+            "runner_processes_used": 4,
+            "runner_reused_tasks": 20,
+            "rss_scope": "runner_lifetime",
+            "successful_files": 24,
+            "validated_index_rows": 120,
+            "attempts": 24,
+            "poll_requests": 9,
+            "control_peak_sampled_rss_bytes": null,
+            "fixture_peak_http_requests": 8,
+            "task_peak_rss_bytes": 44937216,
+            "task_cpu_seconds": 0.7884640000000002,
+            "step_p95_seconds": {
+              "parse": 0.005082130432128906,
+              "chunk": 0.005746126174926758,
+              "stats": 0.0018498897552490234,
+              "embed": 0.03609037399291992,
+              "index": 0.0044286251068115234,
+              "receipt": 0.001434326171875
+            },
+            "scheduler_peaks": {
+              "peak_cpu": 4.1,
+              "peak_memory_mb": 640,
+              "peak_io_operators": 3
+            },
+            "scheduler_policy": "fair_backfill_with_aging",
+            "attempt_resource_peaks": {
+              "cpu": 2.0,
+              "memory_mb": 256
+            },
+            "resource_wait_p95_seconds": 0,
+            "worker_requests_by_route": {
+              "worker_complete": 24,
+              "worker_pulse": 40,
+              "worker_register": 1
+            },
+            "database_pool": {
+              "backend": "sqlite",
+              "pool": {}
+            }
+          }
+        }
+      },
+      {
+        "idle": {
+          "version": "0.7.0",
+          "runtime": {
+            "python": "3.14.8 free-threading build (main, Oct  3 2026, 01:06:51) [Clang 22.1.3 ]",
+            "free_threaded_build": true,
+            "gil_enabled": false
+          },
+          "source_digest": "229f33cef84d7071165da4da54a3789f443bf988cb2eabd1521679aaa99f73db",
+          "sample": "idle",
+          "result": {
+            "seconds": 8.000138667999636,
+            "worker_http_requests": 39,
+            "log_bytes": 0,
+            "cpu_seconds": null,
+            "idle_workers": [
+              {
+                "session_id": "a56235bc-9547-443c-bfc9-b31c94a6ba2a",
+                "name": "373c4abf9fb8",
+                "pool": "default",
+                "runtime_version": "0.7.0",
+                "slots": 4,
+                "cpu": 2,
+                "memory_mb": 1024,
+                "last_seen": 1791988483.9529827,
+                "draining": 0,
+                "online": true,
+                "active_tasks": 0,
+                "free_slots": 4,
+                "telemetry_age_seconds": 0.1300334930419922,
+                "scheduler": {
+                  "active_operators": 0,
+                  "aging_seconds": 2.0,
+                  "cpu": 0.0,
+                  "cpu_capacity": 2.0,
+                  "io_concurrency": 32,
+                  "io_operators": 0,
+                  "memory_capacity_mb": 1024,
+                  "memory_mb": 0,
+                  "oldest_wait_seconds": 0,
+                  "peak_cpu": 0.0,
+                  "peak_io_operators": 0,
+                  "peak_memory_mb": 0,
+                  "policy": "fair_backfill_with_aging",
+                  "waiting_operators": 0
+                },
+                "runtime": {
+                  "processes": 5,
+                  "runner_processes": 4,
+                  "sampled_at": 1791988482.0437768,
+                  "sampled_rss_mb": null
+                }
+              }
+            ],
+            "configuration": {
+              "slots": 4,
+              "interval_seconds": 0.2,
+              "lease_seconds": 3
+            }
+          }
+        },
+        "business": {
+          "version": "0.7.0",
+          "runtime": {
+            "python": "3.14.8 free-threading build (main, Oct  3 2026, 01:06:51) [Clang 22.1.3 ]",
+            "free_threaded_build": true,
+            "gil_enabled": false
+          },
+          "source_digest": "229f33cef84d7071165da4da54a3789f443bf988cb2eabd1521679aaa99f73db",
+          "sample": "business",
+          "result": {
+            "runtime": {
+              "python": "3.14.8 free-threading build (main, Oct  3 2026, 01:06:51) [Clang 22.1.3 ]",
+              "free_threaded_build": true,
+              "gil_enabled": false
+            },
+            "package_version": "0.7.0",
+            "run_id": "80af130e75644f7da4656c36d0f577c0",
+            "measured_at_utc": "2026-10-14T14:34:46Z",
+            "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+            "logical_cpus": 9,
+            "affinity_cpus": 9,
+            "cpu_quota": "800000 100000",
+            "source_digest": "0a3bbf35bd5f958bb480e867687f42187ff579b82ccacaabc240d4804dd5ac5a",
+            "business_source_digest": "95098214d6a35bcbc300a9f3122f2c05a667f3f74e339ceda42118c61c3096c8",
+            "baseline_revision": null,
+            "config": {
+              "files": 24,
+              "workers": 1,
+              "slots": 4,
+              "interval": 2.0,
+              "characters_per_file": 2048,
+              "fixture_http_delay_seconds": 0.005,
+              "store": "sqlite",
+              "embedding_workers": 4,
+              "cpu_rounds": 0,
+              "polling": "batch",
+              "scheduling": "operator",
+              "worker_cpu": 8,
+              "worker_memory_mb": 2048
+            },
+            "elapsed_seconds": 0.9155006549999598,
+            "files_per_second": 26.21516420433479,
+            "chunks_per_second": 131.07582102167396,
+            "submit_p95_ms": 28.375679999953718,
+            "query_p95_ms": 3.961921999689366,
+            "queue_p50_ms": 215.00587463378906,
+            "queue_p95_ms": 312.0079040527344,
+            "execution_p95_ms": 126.97577476501465,
+            "used_executors": 1,
+            "runner_processes_used": 4,
+            "runner_reused_tasks": 20,
+            "rss_scope": "runner_lifetime",
+            "successful_files": 24,
+            "validated_index_rows": 120,
+            "attempts": 24,
+            "poll_requests": 8,
+            "control_peak_sampled_rss_bytes": null,
+            "fixture_peak_http_requests": 7,
+            "task_peak_rss_bytes": 44912640,
+            "task_cpu_seconds": 0.8997540000000002,
+            "step_p95_seconds": {
+              "parse": 0.0057201385498046875,
+              "chunk": 0.014722824096679688,
+              "stats": 0.006755352020263672,
+              "embed": 0.0414423942565918,
+              "index": 0.005286455154418945,
+              "receipt": 0.002786874771118164
+            },
+            "scheduler_peaks": {
+              "peak_cpu": 5.0,
+              "peak_memory_mb": 640,
+              "peak_io_operators": 4
+            },
+            "scheduler_policy": "fair_backfill_with_aging",
+            "attempt_resource_peaks": {
+              "cpu": 2.0,
+              "memory_mb": 256
+            },
+            "resource_wait_p95_seconds": 0,
+            "worker_requests_by_route": {
+              "worker_complete": 24,
+              "worker_pulse": 36,
+              "worker_register": 1
+            },
+            "database_pool": {
+              "backend": "sqlite",
+              "pool": {}
+            }
+          }
+        }
+      }
+    ]
+  },
+  "baseline_revision": "fe536bac72f6cd16cc1c4c347e4b8f27b6621dde"
+}

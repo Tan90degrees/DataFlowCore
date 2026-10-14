@@ -40,6 +40,7 @@ def store(request, tmp_path):
     value = Store(dsn, lease_seconds=6)
     value.migrate()
     yield value
+    value.close()
     if request.param == "postgres":
         connection.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
         connection.close()

@@ -29,7 +29,7 @@ printf 'DataFlow 文档入库示例。\n' > data/documents/example.md
 python -m dataflowcore.examples.embedding_fixture --port 8081
 ```
 
-另一个终端设置管理员令牌后执行：
+另一个终端执行：
 
 ```bash
 python examples/ingest_directory.py "$PWD/data/documents" \

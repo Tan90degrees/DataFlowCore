@@ -3,9 +3,49 @@
 import json
 import logging
 import threading
+import time
 from collections import defaultdict
 
 BUCKETS = (0.01, 0.05, 0.1, 0.5, 1, 5, 10)
+
+
+class FailureLog:
+    """Keep the first diagnostic, count repeats, and emit one recovery transition.
+
+    Keys must be fixed component/route names, never task or request identities.
+    """
+
+    def __init__(self, interval=30):
+        self.interval = interval
+        self.lock = threading.Lock()
+        self.pending = {}
+        self.counts = defaultdict(int)
+
+    def failed(self, key, logger, message, *args, exc_info=False, extra=None):
+        now = time.monotonic()
+        with self.lock:
+            self.counts[key] += 1
+            value = self.pending.setdefault(key, [float("-inf"), 0])
+            value[1] += 1
+            if now - value[0] < self.interval:
+                return
+            repeats = value[1] - 1
+            value[:] = [now, 0]
+        logger.warning(message + " suppressed=%s", *args, repeats, exc_info=exc_info, extra=extra)
+
+    def recovered(self, key, logger):
+        with self.lock:
+            value = self.pending.pop(key, None)
+        if value is not None:
+            logger.info("component_recovered component=%s suppressed=%s", key, value[1])
+
+    def render(self):
+        with self.lock:
+            counts = dict(self.counts)
+        return "# TYPE dataflow_component_errors_total counter\n" + "".join(
+            f'dataflow_component_errors_total{{component="{key}"}} {value}\n'
+            for key, value in sorted(counts.items())
+        )
 
 
 def route_label(path):
@@ -16,7 +56,7 @@ def route_label(path):
         return (
             "worker_" + parts[2]
             if len(parts) == 3
-            and parts[2] in {"register", "heartbeat", "claim", "renew", "complete"}
+            and parts[2] in {"register", "heartbeat", "pulse", "claim", "renew", "complete"}
             else "unknown"
         )
     if parts[:2] == ["v1", "tasks"]:
@@ -29,7 +69,6 @@ def route_label(path):
     return {
         "/v1/overview": "overview",
         "/v1/control": "control",
-        "/v1/audit": "audit",
         "/v1/files": "files",
         "/v1/files/limits": "file_limits",
         "/v1/workers": "workers",
@@ -98,4 +137,7 @@ class JSONFormatter(logging.Formatter):
         }
         if record.exc_info:
             value["exception"] = self.formatException(record.exc_info)
+        for key in ("request_id", "task_id", "attempt_id", "worker_session", "runner_id", "pid"):
+            if hasattr(record, key):
+                value[key] = getattr(record, key)
         return json.dumps(value, ensure_ascii=False)

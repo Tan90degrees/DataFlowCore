@@ -1,4 +1,4 @@
-"""Browser API boundaries: real HTTP, authentication and non-executing DAG validation."""
+"""Browser API boundaries: real HTTP, CORS and non-executing DAG validation."""
 
 import json
 import threading
@@ -45,7 +45,7 @@ def request(url, path, method="GET", data=None, **headers):
         return response.status, response.headers, json.loads(raw) if raw else None
 
 
-def test_cors_requires_exact_origin_and_still_authenticates(browser_api):
+def test_cors_requires_exact_origin_without_credentials(browser_api):
     status, headers, _ = request(browser_api, "/v1/overview", Origin="http://localhost:8000")
     assert status == 200
     assert headers["Access-Control-Allow-Origin"] == "http://localhost:8000"
@@ -54,7 +54,7 @@ def test_cors_requires_exact_origin_and_still_authenticates(browser_api):
     status, headers, _ = request(
         browser_api, "/v1/overview", Origin="http://localhost:8000", Authorization=""
     )
-    assert status == 401
+    assert status == 200
     assert headers["Access-Control-Allow-Origin"] == "http://localhost:8000"
     assert request(browser_api, "/v1/overview")[0] == 200
 

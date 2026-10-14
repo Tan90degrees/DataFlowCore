@@ -1,4 +1,4 @@
-"""Authenticated HTTP control plane. Worker requests never execute business code."""
+"""Internal HTTP control plane. Worker requests never execute business code."""
 
 import hashlib
 import json
@@ -13,9 +13,8 @@ from urllib.parse import parse_qs, urlsplit
 from . import __version__
 from .contracts import APIBusy, Backpressure, Conflict, Invalid, Missing, Paused, TaskSpec, integer
 from .control_lock import ControlLock, ControlLost
-from .observability import HTTPMetrics
+from .observability import FailureLog, HTTPMetrics, route_label
 from .runtime import under_root
-from .security import Credentials, request_actor
 from .store import Store
 from .uploads import DEFAULT_DIR, DEFAULT_MAX_BYTES, UploadError, Uploads
 
@@ -31,8 +30,8 @@ class Server(ThreadingHTTPServer):
         address,
         store,
         data_root,
-        admin_token,
-        worker_token,
+        admin_token="",
+        worker_token="",
         insecure=False,
         reap_interval=1,
         cors_origins=(),
@@ -40,33 +39,18 @@ class Server(ThreadingHTTPServer):
         upload_concurrency=4,
         upload_timeout=300,
         upload_dir=DEFAULT_DIR,
-        viewer_tokens=(),
-        admin_tokens=(),
-        worker_tokens=(),
-        operator_modules=(),
         upload_min_free_bytes=0,
         ownership=None,
         management_concurrency=8,
     ):
-        self.credentials = Credentials(
-            ((admin_token,) if admin_token else ()) + tuple(admin_tokens),
-            ((worker_token,) if worker_token else ()) + tuple(worker_tokens),
-            viewer_tokens,
-            insecure,
-        )
         self.store, self.data_root = store, data_root
-        self.admin_token, self.worker_token, self.insecure = admin_token, worker_token, insecure
         self.ownership = ownership
         self.ownership_healthy = True
         self.last_reconciliation = time.time()
         self.metrics = HTTPMetrics()
+        self.failures = FailureLog()
         integer(management_concurrency, "management concurrency", 1, 32)
         self.management_slots = threading.BoundedSemaphore(management_concurrency)
-        self.operator_modules = tuple(operator_modules)
-        if any(
-            not re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", m) for m in self.operator_modules
-        ):
-            raise Invalid("operator modules must be Python module prefixes")
         self.reap_interval = reap_interval
         self.cors_origins = frozenset(cors_origins)
         for origin in self.cors_origins:
@@ -112,22 +96,16 @@ class Server(ThreadingHTTPServer):
         result["quiescent"] = (
             result["paused"] and result["active_attempts"] == 0 and result["active_uploads"] == 0
         )
-        result["operator_modules"] = self.operator_modules
         result["reconciliation_last_success_at"] = self.last_reconciliation
+        result["database"] = {
+            "backend": "postgres" if self.store.postgres else "sqlite",
+            "pool": self.store.pool_stats(),
+        }
         return result
 
-    def validate(self, data):
-        spec = TaskSpec.parse(data)
-        if self.operator_modules and any(
-            not any(
-                s["callable"].partition(":")[0] == prefix
-                or s["callable"].partition(":")[0].startswith(prefix + ".")
-                for prefix in self.operator_modules
-            )
-            for s in spec.steps
-        ):
-            raise UploadError(403, "operator module is not allowed by this controller")
-        return spec
+    @staticmethod
+    def validate(data):
+        return TaskSpec.parse(data)
 
     def process_request(self, request, client_address):
         if not self.slots.acquire(blocking=False):
@@ -162,6 +140,7 @@ class Server(ThreadingHTTPServer):
                 count = self.store.reap()
                 self.last_reconciliation = time.time()
                 self.ownership_healthy = True
+                self.failures.recovered("reconciliation", log)
                 if count:
                     log.info("recovered_expired_attempts count=%s", count)
             except ControlLost:
@@ -171,7 +150,7 @@ class Server(ThreadingHTTPServer):
                 return
             except Exception:
                 self.ownership_healthy = False
-                log.exception("reconciliation_failed")
+                self.failures.failed("reconciliation", log, "reconciliation_failed", exc_info=True)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -202,8 +181,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Request-ID", self.request_id)
 
     def log_message(self, fmt, *args):
-        log.info(
-            "http request_id=%s peer=%s %s", self.request_id, self.client_address[0], fmt % args
+        level = logging.WARNING if 400 <= self.response_code < 500 else logging.DEBUG
+        log.log(
+            level,
+            "http request_id=%s peer=%s %s",
+            self.request_id,
+            self.client_address[0],
+            fmt % args,
         )
 
     def end_headers(self):
@@ -251,7 +235,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def dispatch(self, method):
         path = urlsplit(self.path).path
-        actor_context = None
         management_acquired = False
         try:
             supplied_id = self.headers.get("X-Request-ID", "")
@@ -275,27 +258,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.store.ping()
                 self.send_json(200, {"ready": True})
                 return
-            actor = self.server.credentials.authenticate(
-                self.headers.get("Authorization", ""), path.startswith("/v1/worker/")
-            )
-            if actor is None:
-                self.send_json(401, {"error": "authentication required"})
-                return
-            self.role = actor["role"]
-            actor_context = request_actor.set({**actor, "request_id": self.request_id})
-            if self.role != "worker":
+            if not path.startswith("/v1/worker/"):
                 management_acquired = self.server.management_slots.acquire(blocking=False)
                 if not management_acquired:
                     raise APIBusy("management requests are busy; retry later")
-            if (
-                self.role == "viewer"
-                and method == "POST"
-                and path not in ("/v1/tasks/status", "/v1/dags/validate")
-            ):
-                self.send_json(
-                    403, {"error": "read-only credential cannot change state", "code": "read_only"}
-                )
-                return
             if method == "POST" and (
                 not self.server.ownership_healthy or self.server.stopped.is_set()
             ):
@@ -304,6 +270,7 @@ class Handler(BaseHTTPRequestHandler):
                 telemetry = self.server.store.telemetry()
                 data = (
                     self.server.metrics.render()
+                    + self.server.failures.render()
                     + "# TYPE dataflow_tasks gauge\n"
                     + "".join(
                         f'dataflow_tasks{{state="{state}"}} {telemetry["tasks"].get(state, 0)}\n'
@@ -335,12 +302,34 @@ class Handler(BaseHTTPRequestHandler):
                             "oldest_queue_seconds",
                             "online_workers",
                             "worker_slots",
+                            "free_worker_slots",
+                            "reporting_workers",
+                            "reserved_cpu",
+                            "reserved_memory_mb",
+                            "active_operators",
+                            "waiting_operators",
                             "paused",
                         )
                     )
                     + "# TYPE dataflow_reconciliation_last_success_timestamp_seconds gauge\n"
                     + "dataflow_reconciliation_last_success_timestamp_seconds "
                     + f"{self.server.last_reconciliation}\n"
+                    + "".join(
+                        f"# TYPE dataflow_db_pool_{key} gauge\n"
+                        f"dataflow_db_pool_{key} {self.server.store.pool_stats().get(key, 0)}\n"
+                        for key in ("pool_size", "pool_available", "requests_waiting")
+                    )
+                    + "".join(
+                        f"# TYPE dataflow_db_pool_{key} counter\n"
+                        f"dataflow_db_pool_{key} {self.server.store.pool_stats().get(key, 0)}\n"
+                        for key in (
+                            "connections_num",
+                            "requests_num",
+                            "requests_queued",
+                            "requests_wait_ms",
+                            "requests_errors",
+                        )
+                    )
                 ).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain; version=0.0.4")
@@ -375,6 +364,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             result = self.route(method, path, self.body() if method == "POST" else {})
             self.send_json(200, result)
+            self.server.failures.recovered(route_label(path), log)
         except Backpressure as exc:
             self.send_response(exc.status)
             self.send_header("Retry-After", "5")
@@ -393,19 +383,24 @@ class Handler(BaseHTTPRequestHandler):
         except (Invalid, KeyError, TypeError, ValueError) as exc:
             self.send_json(400, {"error": str(exc)})
         except Exception:
-            log.exception("request_failed path=%s request_id=%s", path, self.request_id)
+            self.server.failures.failed(
+                route_label(path),
+                log,
+                "request_failed path=%s request_id=%s",
+                path,
+                self.request_id,
+                exc_info=True,
+            )
             self.send_json(503, {"error": "service temporarily unavailable"})
         finally:
             if management_acquired:
                 self.server.management_slots.release()
-            if actor_context is not None:
-                request_actor.reset(actor_context)
 
     def route(self, method, path, data):
         store = self.server.store
         parts = path.strip("/").split("/")
         if method == "GET" and path == "/v1/overview":
-            return {**store.overview(), "version": __version__, "role": self.role}
+            return {**store.overview(), "version": __version__}
         if method == "GET" and path == "/v1/control":
             return self.server.operational_state()
         if method == "POST" and path == "/v1/control":
@@ -414,11 +409,6 @@ class Handler(BaseHTTPRequestHandler):
             with self.server.uploads.lock:
                 store.set_paused(data.get("paused"))
             return self.server.operational_state()
-        if method == "GET" and path == "/v1/audit":
-            query = parse_qs(urlsplit(self.path).query)
-            return store.audit_page(
-                int(query.get("limit", ["100"])[0]), query.get("cursor", [None])[0]
-            )
         if method == "GET" and path == "/v1/files/limits":
             return self.server.uploads.limits()
         if method == "GET" and path == "/v1/files":
@@ -487,6 +477,8 @@ class Handler(BaseHTTPRequestHandler):
             for key in ("slots", "cpu", "memory_mb"):
                 integer(data.get(key), key, 1, 1048576)
             return store.register(**data)
+        if method == "POST" and path == "/v1/worker/pulse":
+            return store.pulse(**data)
         if method == "POST" and path == "/v1/worker/heartbeat":
             return store.heartbeat(**data)
         if method == "POST" and path == "/v1/worker/claim":
@@ -553,10 +545,6 @@ def serve(
     upload_concurrency=4,
     upload_timeout=300,
     upload_dir=DEFAULT_DIR,
-    viewer_tokens=(),
-    admin_tokens=(),
-    worker_tokens=(),
-    operator_modules=(),
     upload_min_free_bytes=0,
     max_unfinished=10000,
     db_timeout_ms=5000,
@@ -577,15 +565,12 @@ def serve(
             upload_concurrency=upload_concurrency,
             upload_timeout=upload_timeout,
             upload_dir=upload_dir,
-            viewer_tokens=viewer_tokens,
-            admin_tokens=admin_tokens,
-            worker_tokens=worker_tokens,
-            operator_modules=operator_modules,
             upload_min_free_bytes=upload_min_free_bytes,
             ownership=ownership,
         )
     except BaseException:
         ownership.close()
+        store.close()
         raise
     import signal
 
@@ -599,3 +584,4 @@ def serve(
     finally:
         server.server_close()
         ownership.close()
+        store.close()

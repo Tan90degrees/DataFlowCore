@@ -6,13 +6,11 @@ const input = path.join(process.env.DATAFLOW_CONSOLE_TEST_ROOT, "input.txt");
 const base = "http://127.0.0.1:8086";
 const headers = { Authorization: `Bearer ${"a".repeat(32)}` };
 
-async function connect(page, token = "a".repeat(32)) {
+async function connect(page) {
   await page.goto("/");
   await page.getByRole("button", { name: /配置 API 连接/ }).click();
   await page.getByLabel("API 地址").fill(base);
-  await page.getByLabel("管理令牌").fill(token);
   await page.getByRole("button", { name: "连接", exact: true }).click();
-  if (token === "a".repeat(32))
     await expect(
       page.getByRole("button", { name: /API 已连接/ }),
     ).toBeVisible();
@@ -42,18 +40,13 @@ function spec(name, steps, parameters = {}) {
 }
 
 // These tests issue real browser CORS requests; no mock control-plane responses.
-test("auth, cursor pagination, filters, DAG edits, cycle rejection and business results", async ({
+test("token-free connection, cursor pagination, filters, DAG edits, cycle rejection and business results", async ({
   page,
   request,
 }) => {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await connect(page, "wrong");
-  await expect(page.getByRole("alert")).toContainText(
-    "authentication required",
-  );
-  await page.getByLabel("管理令牌").fill("a".repeat(32));
-  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await connect(page);
   await expect(page.locator("tbody tr")).toHaveCount(30);
   await page.getByRole("button", { name: "下一页" }).click();
   await expect(page.locator("tbody tr")).toHaveCount(5);
@@ -178,7 +171,6 @@ test("local upload through /api preserves edits, confirms lost response and exec
   });
   await page.goto("/#dag");
   await page.getByRole("button", { name: /配置 API 连接/ }).click();
-  await page.getByLabel("管理令牌").fill("a".repeat(32));
   await page.getByRole("button", { name: "连接", exact: true }).click();
   await expect(page.getByRole("button", { name: /API 已连接/ })).toBeVisible();
   await importSpec(page, spec("浏览器上传文件业务", [
@@ -384,7 +376,7 @@ test("lost submit response is idempotent; cancellation, retry, failures and work
   await expect(page.getByRole("button", { name: "排空执行器" })).toBeDisabled();
 });
 
-test("mobile editor is usable, API outage preserves edits and auth expiry stops polling", async ({
+test("mobile editor is usable, API outage preserves edits and denied gateway stops polling", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -393,7 +385,6 @@ test("mobile editor is usable, API outage preserves edits and auth expiry stops 
   await page.locator("#node-parameters").fill("{");
   await page.getByRole("button", { name: /配置 API 连接/ }).click();
   await page.getByLabel("API 地址").fill(base);
-  await page.getByLabel("管理令牌").fill("a".repeat(32));
   await page.getByRole("button", { name: "连接", exact: true }).click();
   await expect(page.getByRole("button", { name: /API 已连接/ })).toBeVisible();
   await expect(page.getByLabel("任务名称")).toHaveValue("离线编辑保留");
@@ -420,7 +411,7 @@ test("mobile editor is usable, API outage preserves edits and auth expiry stops 
     }),
   );
   await page.getByRole("button", { name: "刷新", exact: true }).click();
-  await expect(page.locator("#notice")).toContainText("管理令牌失效");
+  await expect(page.locator("#notice")).toContainText("API 入口拒绝访问");
   await expect(
     page.getByRole("button", { name: /配置 API 连接/ }),
   ).toBeVisible();
@@ -432,10 +423,6 @@ test("development server default /api connects and validates through the real pr
   await page.goto("/");
   await page.getByRole("button", { name: /配置 API 连接/ }).click();
   await expect(page.getByLabel("API 地址")).toHaveValue("/api");
-  await page.getByLabel("管理令牌").fill("wrong");
-  await page.getByRole("button", { name: "连接", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("authentication required");
-  await page.getByLabel("管理令牌").fill("a".repeat(32));
   await page.getByRole("button", { name: "连接", exact: true }).click();
   await expect(page.getByRole("button", { name: /API 已连接/ })).toBeVisible();
   await page.getByRole("link", { name: "DAG 编排" }).click();
@@ -495,7 +482,7 @@ test("stop acknowledgement survives an older in-flight refresh", async ({ page, 
   }
 });
 
-test("stop controls recover after dismissing confirmation and reconnecting an expired token", async ({ page, request }) => {
+test("stop controls recover after dismissing confirmation and reconnecting", async ({ page, request }) => {
   await connect(page);
   const response = await request.post(base + "/v1/tasks", {
     headers: { ...headers, "Idempotency-Key": "stop-reconnect-" + Date.now() },
@@ -518,16 +505,15 @@ test("stop controls recover after dismissing confirmation and reconnecting an ex
   await expect(page.getByRole("button", { name: "停止任务", exact: true })).toBeEnabled();
   expect(cancels).toBe(0);
   expect((await (await request.get(`${base}/v1/tasks/${task.id}`, { headers })).json()).state).toBe("QUEUED");
-  // Forward an invalid credential to the real API rather than mocking its 401.
-  await page.route(`**/v1/tasks/${task.id}`, (route) => route.continue({
-    headers: { ...route.request().headers(), authorization: "Bearer " + "w".repeat(32) },
-  }), { times: 1 });
+  // An optional product gateway may reject an API connection independently of this component.
+  await page.route(`**/v1/tasks/${task.id}`, route => route.fulfill({status: 401,
+    contentType: "application/json", body: '{"error":"gateway denied"}',
+    headers: {"Access-Control-Allow-Origin": "http://127.0.0.1:8000"}}), {times: 1});
   await page.getByRole("button", { name: "刷新", exact: true }).click();
-  await expect(page.locator("#notice")).toContainText("管理令牌失效");
+  await expect(page.locator("#notice")).toContainText("API 入口拒绝访问");
   await expect(page.locator("#stop-task")).toBeDisabled();
   await expect(page.locator("#task-stop-hint")).toContainText("重新连接");
   await page.getByRole("button", { name: /配置 API 连接/ }).click();
-  await page.getByLabel("管理令牌").fill("a".repeat(32));
   await page.getByRole("button", { name: "连接", exact: true }).click();
   await expect(page.getByRole("button", { name: "停止任务", exact: true })).toBeEnabled();
   await page.getByRole("button", { name: "停止任务", exact: true }).click();
@@ -581,32 +567,26 @@ test("cancel a slow real upload and keep the task draft", async ({ page, request
   await session.detach();
 });
 
-test("read-only console disables mutations and explains queue placement", async ({page, request}) => {
-  const created = await request.post(base + "/v1/tasks", {headers: {...headers, "Idempotency-Key": "viewer-queue"},
-    data: {...spec("只读排队诊断", [{id: "read", callable: "dataflowcore.operators:read_text"}]), pool: "missing-pool"}});
+test("internal console controls work without credentials and explain queue placement", async ({page, request}) => {
+  const created = await request.post(base + "/v1/tasks", {headers: {"Idempotency-Key": "internal-queue"},
+    data: {...spec("内部排队诊断", [{id: "read", callable: "dataflowcore.operators:read_text"}]), pool: "missing-pool"}});
   expect(created.ok()).toBeTruthy();
   const task = await created.json();
-  try {
-    await connect(page, "v".repeat(32));
-    await expect(page.getByRole("button", {name: /API 已连接（只读）/})).toBeVisible();
-    await page.evaluate(id => {location.hash = `task/${id}`;}, task.id);
-    await expect(page.locator("#queue-reason")).toContainText("执行池");
-    await expect(page.getByRole("button", {name: "停止任务", exact: true})).toBeDisabled();
-    await expect(page.locator("#task-stop-hint")).toContainText("只读连接");
-    await page.getByRole("link", {name: "DAG 编排", exact: true}).click();
-    await expect(page.getByRole("button", {name: "提交任务", exact: true})).toBeDisabled();
-    await page.getByRole("link", {name: "运维", exact: true}).click();
-    await expect(page.getByRole("button", {name: "暂停任务接入", exact: true})).toBeDisabled();
-    const forbidden = await request.post(base + `/v1/tasks/${task.id}/cancel`, {
-      headers: {Authorization: `Bearer ${"v".repeat(32)}`}, data: {},
-    });
-    expect(forbidden.status()).toBe(403);
-  } finally {
-    await request.post(base + `/v1/tasks/${task.id}/cancel`, {headers, data: {}});
-  }
+  await connect(page);
+  await expect(page.getByLabel("管理令牌")).toHaveCount(0);
+  await page.evaluate(id => {location.hash = `task/${id}`;}, task.id);
+  await expect(page.locator("#queue-reason")).toContainText("执行池");
+  await expect(page.getByRole("button", {name: "停止任务", exact: true})).toBeEnabled();
+  await page.getByRole("button", {name: "停止任务", exact: true}).click();
+  await page.locator("#confirm-yes").click();
+  await expect(page.locator(".title-meta .badge")).toHaveText("已取消");
+  await page.getByRole("link", {name: "执行器", exact: true}).click();
+  await expect(page.locator("#main")).toContainText("文件运行 / 空闲槽位");
+  await expect(page.locator("#main")).toContainText("当前资源预留");
+  await expect(page.locator("#main")).not.toContainText("当前无资源快照");
 });
 
-test("operations pauses admission, reports quiescence and records management audit", async ({page, request}) => {
+test("operations pauses admission and reports quiescence", async ({page, request}) => {
   await connect(page);
   await page.getByRole("link", {name: "运维", exact: true}).click();
   await expect(page.getByRole("button", {name: "暂停任务接入", exact: true})).toBeEnabled();
@@ -615,7 +595,6 @@ test("operations pauses admission, reports quiescence and records management aud
     await page.locator("#confirm-yes").click();
     await expect(page.getByRole("button", {name: "恢复任务接入", exact: true})).toBeEnabled();
     await expect(page.locator("#main")).toContainText("已暂停且执行与上传归零");
-    await expect(page.locator(".event").filter({hasText: "control.paused"})).toBeVisible();
     const refused = await request.post(base + "/v1/tasks", {headers: {...headers, "Idempotency-Key": "paused-new"},
       data: spec("暂停时不能提交", [{id: "read", callable: "dataflowcore.operators:read_text"}])});
     expect(refused.status()).toBe(503);

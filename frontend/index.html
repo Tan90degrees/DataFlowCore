@@ -66,17 +66,7 @@
             placeholder="http://127.0.0.1:8080 或 /api"
             autocomplete="url"
         /></label>
-        <label
-          >管理令牌<input
-            id="api-token"
-            type="password"
-            required
-            autocomplete="off"
-            placeholder="Admin Bearer token"
-        /></label>
-        <p class="hint">
-          令牌仅保存在当前页面内存，刷新后需重新输入。跨域连接需在管控节点配置允许的前端来源。
-        </p>
+        <p class="hint">跨域连接需在管控节点配置允许的前端来源。</p>
         <p id="connect-error" class="error-text" role="alert"></p>
         <div class="actions">
           <button type="button" id="disconnect" class="danger ghost">
