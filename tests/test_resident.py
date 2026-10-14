@@ -139,7 +139,9 @@ def test_short_files_reuse_slot_without_waiting_for_periodic_pulse(cluster):
     tasks = [cluster.submit(seconds=0.01) for _ in range(6)]
     results = cluster.client.wait_many([t["id"] for t in tasks], timeout=8, interval=0.02)
     elapsed = time.monotonic() - started
-    assert all(t["state"] == "SUCCEEDED" and t["attempt_count"] == 1 for t in results)
+    assert all(t["state"] == "SUCCEEDED" and t["attempt_count"] == 1 for t in results), [
+        {k: t[k] for k in ("id", "state", "attempt_count", "error")} for t in results
+    ]
     assert elapsed < 6 * 0.8 * 0.6, "completed files must trigger immediate slot reuse"
 
 

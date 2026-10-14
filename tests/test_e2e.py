@@ -88,7 +88,10 @@ class Cluster:
 
     def submit(self, seconds=0, steps=None, **changes):
         source = self.root / "input.txt"
-        source.write_text("hello world hello")
+        # Submitted inputs are immutable. Fast event-driven execution may already
+        # hash this file while a subsequent task is being submitted.
+        if not source.exists():
+            source.write_text("hello world hello")
         spec = {
             "input_path": str(source),
             "retry_delay": 0,
