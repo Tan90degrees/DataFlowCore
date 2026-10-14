@@ -110,7 +110,7 @@ from dataflowcore.sdk import Client, Pipeline
 from dataflowcore.operators import read_text, word_count, write_json
 
 flow = (
-    Pipeline("file-processing", pool="default", cpu=2, memory_mb=512)
+    Pipeline("file-processing", pool="default")
     .step("read", read_text, workload="io", resources={"cpu": 0.1, "memory_mb": 64})
     .step(
         "count",
@@ -136,8 +136,9 @@ task = Client("http://control:8080", "your-admin-token").submit(
 支持函数、协程函数、无参数构造的 callable class；轻量实例按任务/步骤创建。重资源通过 `context.resource(key, factory)` 在同一槽位内跨任务复用，详见 [常驻运行进程](docs/resident-runners.md)。
 inputs 是直接上游返回值映射，算子必须视依赖结果为只读。
 
-0.4.0 新任务默认按算子预留资源，完成后释放；任务仍在同一常驻槽位完成。
-`dag_workers` / `io_workers` 分别限制 CPU / IO 算子并发，未配置节点默认继承顶层 CPU/内存。
+0.5.0 只需要配置算子的资源，不再填写任务 CPU、内存或 DAG 线程数。就绪节点按资源
+预算自动并行，完成后释放；任务仍在同一常驻槽位完成。可用资源优先回填给能运行的节点，
+跨文件公平分配，老请求获得资源保护，避免持续被小请求插队。
 前端节点编辑器可直接设置类型与资源，详见 [算子级资源调度](docs/operator-scheduling.md)。
 
 ```python

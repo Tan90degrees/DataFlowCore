@@ -68,6 +68,7 @@ class RunnerRuntime:
             self.temp = tempfile.TemporaryDirectory(prefix="dataflow-resources-")
             budget = ResourceBudget(Path(self.temp.name) / "budget.sqlite", 1024, 1048576)
         self.budget, self.owner = budget, owner
+        self.budget.configure_owner(owner, dag_workers, io_workers)
         self.local = threading.local()
         self.lock = threading.RLock()
         self.resources = {}

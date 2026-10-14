@@ -125,6 +125,7 @@ class Worker:
         runner_io_workers=16,
         runner_io_map_workers=16,
         io_concurrency=32,
+        resource_aging_seconds=2,
     ):
         if min(slots, cpu, memory_mb) < 1 or interval <= 0 or stop_grace < 0:
             raise ValueError("invalid worker capacity/timing")
@@ -134,7 +135,9 @@ class Worker:
         self.data_root = Path(data_root).resolve()
         self.root = Path(work_root).resolve() / self.session
         self.root.mkdir(parents=True, exist_ok=True)
-        self.budget = ResourceBudget(self.root / "resources.sqlite", cpu, memory_mb, io_concurrency)
+        self.budget = ResourceBudget(
+            self.root / "resources.sqlite", cpu, memory_mb, io_concurrency, resource_aging_seconds
+        )
         self.slots, self.cpu, self.memory_mb, self.pool = slots, cpu, memory_mb, pool
         self.interval, self.stop_grace, self.allow_gil = interval, stop_grace, allow_gil
         self.runtime_version = runtime_version

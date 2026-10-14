@@ -54,7 +54,7 @@ def cpu_units(value: Any, name: str = "cpu") -> float:
     value = number(value, name, 0, 1024)
     if abs(value * 1000 - round(value * 1000)) > 1e-7:
         raise Invalid(f"{name} must use at most three decimal places")
-    return value
+    return round(value * 1000) / 1000
 
 
 def keys(value: dict, allowed: set[str]) -> None:
@@ -176,4 +176,16 @@ class TaskSpec:
     def json(self) -> dict:
         from dataclasses import asdict
 
-        return asdict(self)
+        data = asdict(self)
+        if self.scheduling == "operator":
+            for key in ("cpu", "memory_mb", "dag_workers", "io_workers", "scheduling"):
+                data.pop(key)
+        return data
+
+    def storage(self) -> dict:
+        # Routing indexes use this derived cache; it is never an authoring knob.
+        return self.json() | {
+            "scheduling": self.scheduling,
+            "cpu": self.cpu,
+            "memory_mb": self.memory_mb,
+        }

@@ -258,6 +258,7 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
         Path(data_root) / "outputs" / assignment["task_id"] / assignment["attempt_id"], data_root
     )
     output.mkdir(parents=True, exist_ok=False)
+    runtime.budget.begin_attempt(runtime.owner)
     runtime_info = require_free_threading(allow_gil)
     runtime_info["runner"] = {
         "pid": os.getpid(),
@@ -274,10 +275,9 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
         scheduler=runtime.budget.snapshot,
     )
     results, running, submitted, waiting = {}, {}, set(), {}
-    limits = {
-        "cpu": min(spec.dag_workers, runtime.dag_workers),
-        "io": min(spec.io_workers, runtime.io_workers),
-    }
+    limits = {"cpu": runtime.dag_workers, "io": runtime.io_workers}
+    if spec.scheduling == "task":
+        limits["cpu"] = min(spec.dag_workers, runtime.dag_workers)
     task_key = f"{assignment['attempt_id']}:task"
 
     def waiting_for(step, message):
@@ -362,7 +362,21 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
         while len(results) < len(spec.steps):
             if cancelled.is_set():
                 raise Cancelled("task cancellation requested")
-            for step in spec.steps:
+            ready_steps = [
+                s
+                for s in spec.steps
+                if s["id"] not in submitted and set(s.get("depends_on", [])) <= results.keys()
+            ]
+            grants = set()
+            if spec.scheduling == "operator":
+                grants = runtime.budget.schedule(
+                    runtime.owner,
+                    [
+                        (f"{assignment['attempt_id']}:{s['id']}", s["workload"], s["resources"])
+                        for s in ready_steps
+                    ],
+                )
+            for step in ready_steps:
                 deps = step.get("depends_on", [])
                 kind = step.get("workload", "cpu")
                 if step["id"] not in submitted and set(deps) <= results.keys():
@@ -373,9 +387,7 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
                         waiting_for(step, f"Waiting for {kind.upper()} concurrency slot")
                         continue
                     key = f"{assignment['attempt_id']}:{step['id']}"
-                    if spec.scheduling == "operator" and not runtime.budget.acquire(
-                        runtime.owner, key, kind, step["resources"]
-                    ):
+                    if spec.scheduling == "operator" and key not in grants:
                         waiting_for(step, "Waiting for executor CPU/memory or IO concurrency")
                         continue
                     ready(step)
@@ -417,6 +429,7 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
         if spec.scheduling == "task":
             runtime.budget.release(runtime.owner, task_key)
         runtime_info["scheduling"] = spec.scheduling
+        runtime_info["peak_resources"] = runtime.budget.attempt_peak(runtime.owner)
         runtime_info["scheduler"] = runtime.budget.snapshot()
         progress.finish("SUCCEEDED")
         usage = resource.getrusage(resource.RUSAGE_SELF)
