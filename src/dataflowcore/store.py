@@ -27,6 +27,7 @@ from .contracts import (
     integer,
     number,
 )
+from .resources import WAIT_REASONS
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
@@ -379,6 +380,21 @@ class Store:
             ):
                 if key in scheduler:
                     number(scheduler[key], key, 0, 1e12)
+            waiting = scheduler.get("waiting_by_reason", {})
+            if not isinstance(waiting, dict) or set(waiting) - set(WAIT_REASONS):
+                raise Invalid("invalid waiting reason telemetry")
+            for reason, count in waiting.items():
+                integer(count, reason, 0, 1000000)
+            protected = scheduler.get("protected_resources")
+            if protected is not None:
+                if not isinstance(protected, dict) or set(protected) != {
+                    "cpu",
+                    "memory_mb",
+                    "io_operators",
+                }:
+                    raise Invalid("invalid protected resource telemetry")
+                for key, value in protected.items():
+                    number(value, key, 0, 1e12)
             runtime = telemetry.get("runtime", {})
             for key in ("sampled_rss_mb", "sampled_at", "processes", "runner_processes"):
                 if runtime.get(key) is not None:
@@ -898,6 +914,10 @@ class Store:
                 "reserved_memory_mb": sum(s.get("memory_mb", 0) for s in snapshots),
                 "active_operators": sum(s.get("active_operators", 0) for s in snapshots),
                 "waiting_operators": sum(s.get("waiting_operators", 0) for s in snapshots),
+                "waiting_by_reason": {
+                    reason: sum(s.get("waiting_by_reason", {}).get(reason, 0) for s in snapshots)
+                    for reason in WAIT_REASONS
+                },
                 "paused": int(self.paused(db)),
             }
 

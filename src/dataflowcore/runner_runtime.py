@@ -13,18 +13,26 @@ from .resources import ResourceBudget
 
 class TrackedPool:
     def __init__(self, workers, name):
-        self.executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=name)
         self.lock = threading.Lock()
         self.pending = set()
         self.threads = set()
+        self.executor = ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix=name, initializer=self.register_thread
+        )
+
+    def register_thread(self):
+        # A new worker can remain idle while an existing worker consumes its
+        # queued job. Ownership belongs to every initialized thread, not only
+        # those that happened to execute a user function.
+        with self.lock:
+            self.threads.add(threading.current_thread())
+
+    def thread_snapshot(self):
+        with self.lock:
+            return set(self.threads)
 
     def submit(self, fn, *args):
-        def invoke():
-            with self.lock:
-                self.threads.add(threading.current_thread())
-            return fn(*args)
-
-        future = self.executor.submit(invoke)
+        future = self.executor.submit(fn, *args)
         with self.lock:
             self.pending.add(future)
 
@@ -164,14 +172,12 @@ class RunnerRuntime:
             return idle
 
     def safe_to_reuse(self):
-        owned = (
-            self.baseline_threads
-            | self.dag.threads
-            | self.blocks.threads
-            | self.io.threads
-            | self.io_blocks.threads
-        )
-        return self.idle() and set(threading.enumerate()) <= owned
+        if not self.idle():
+            return False
+        owned = set(self.baseline_threads)
+        for pool in (self.dag, self.blocks, self.io, self.io_blocks):
+            owned.update(pool.thread_snapshot())
+        return set(threading.enumerate()) <= owned
 
     def close(self):
         self.dag.close()

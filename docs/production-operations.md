@@ -1,4 +1,4 @@
-# 生产运维（0.7.0）
+# 生产运维（0.8.0）
 
 ## 接入和升级
 
@@ -35,6 +35,10 @@ control.maxUnfinished 默认 10000，计算 QUEUED/RUNNING/STOPPING（含退避�
 
 queue_diagnostic 分辨维护、退避、离线、池、版本、排空、容量与槽位，等待领取也
 可能受历史整任务预留影响。算子等待见 progress.steps 的 resource_wait_seconds。
+wait_reasons 与执行器页的等待瓶颈区分 CPU、内存、执行器 IO 配额、本槽位 CPU/IO
+线程池及老请求保护。一个节点可有多个原因。线程池限制先查部署宽度；CPU/内存不足
+先核对声明和 Pod 实测；aging 时看 protected_resources 与最长等待，运行节点释放后
+老请求优先推进。NO_FREE_SLOT 是文件槽位已满，应结合驻留缓存内存评估 slots。
 0.6.0 默认 GET task 只展开当前尝试，历史 detail_loaded=0；请求
 GET /v1/tasks/{id}?attempt={attempt-id} 同时取得所选历史详情，前端自动处理。
 列表默认 summary=1；summary=0 每页最多 10 个定义。升级依赖历史完整 payload 的
@@ -45,6 +49,9 @@ GET /v1/tasks/{id}?attempt={attempt-id} 同时取得所选历史详情，前端�
 恢复记录。HTTP 请求量/时延、组件错误计数持续累计，不因日志限频丢失故障数量。
 SDK APIError 提供 request_id/code/retry_after。任务启动日志包含 task_id、attempt_id、
 worker_session 和 runner_id；详情中的 generation 区分不同 Pod/槽位和 PID 复用。
+runner_replaced 日志含回收原因：task_not_succeeded、unfinished_pool_work、
+unmanaged_threads、child_processes 或 task_limit。线程池按线程初始化登记所有权，
+已启动但尚未执行业务的池线程可继续复用；业务遗留线程/子进程仍触发隔离回收。
 
 空闲执行器同样报告 scheduler。free_slots 由数据库活跃 Attempt 统计，不依赖可能
 滞后的本机 busy 标记。快照是采样，需同时看 online/telemetry_age_seconds；离线

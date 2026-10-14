@@ -78,28 +78,30 @@ class Progress:
         self.flush_interval, self.last_flush = flush_interval, 0.0
         self.started = time.monotonic()
         self.state, self.closed = "RUNNING", False
+        self.first_running = True
         self.runner = runner
         self.scheduler = scheduler
         self.update()
 
-    def update(self, sid=None, **values):
+    def update(self, sid=None, *, force=False, **values):
         with self.lock:
             if self.closed:
                 return
-            transition = "state" in values
             if sid:
                 if values.get("state") == "RUNNING":
                     values["started_at"] = time.time()
+                    if self.first_running:
+                        force, self.first_running = True, False
                 elif values.get("state") in ("SUCCEEDED", "FAILED", "CANCELLED"):
                     values["finished_at"] = time.time()
                     values["duration_seconds"] = max(
                         0, values["finished_at"] - self.steps[sid].get("started_at", time.time())
                     )
                 self.steps[sid].update(values)
-            if transition or time.monotonic() - self.last_flush >= self.flush_interval:
+            if force or time.monotonic() - self.last_flush >= self.flush_interval:
                 self.flush_locked()
 
-    def flush_locked(self):
+    def flush_locked(self, *, durable=False):
         completed = sum(s["state"] == "SUCCEEDED" for s in self.steps.values())
         fractions = sum(
             1
@@ -130,7 +132,9 @@ class Progress:
             # At the 1000-step contract limit, verbose counters/timestamps may
             # exceed the renewal budget. Preserve every step's lifecycle state.
             snapshot["steps"] = {sid: {"state": step["state"]} for sid, step in self.steps.items()}
-        atomic_json(self.path, snapshot)
+        # Live progress is a replaceable workspace snapshot. The terminal
+        # snapshot is fsynced once, then committed with the result by the worker.
+        atomic_json(self.path, snapshot, durable=durable)
         self.last_flush = time.monotonic()
 
     def finish(self, state):
@@ -141,7 +145,7 @@ class Progress:
                     step["state"] = "SKIPPED"
                 elif step["state"] in ("RUNNING", "WAITING_RESOURCES"):
                     step.update(state="CANCELLED", finished_at=time.time())
-            self.flush_locked()
+            self.flush_locked(durable=True)
             self.closed = True
 
 
@@ -276,13 +280,22 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
         runner=runtime_info["runner"],
         scheduler=runtime.budget.snapshot,
     )
-    results, running, submitted, waiting = {}, {}, set(), {}
+    results, running, waiting = {}, {}, {}
+    by_id = {step["id"]: step for step in spec.steps}
+    dependents = {sid: [] for sid in by_id}
+    remaining = {step["id"]: len(step.get("depends_on", [])) for step in spec.steps}
+    for step in spec.steps:
+        for dependency in step.get("depends_on", []):
+            dependents[dependency].append(step["id"])
+    ready_steps = {sid: by_id[sid] for sid, count in remaining.items() if count == 0}
+    new_requests = list(ready_steps.values())
+    active_counts = {"cpu": 0, "io": 0}
     limits = {"cpu": runtime.dag_workers, "io": runtime.io_workers}
     if spec.scheduling == "task":
         limits["cpu"] = min(spec.dag_workers, runtime.dag_workers)
     task_key = f"{assignment['attempt_id']}:task"
 
-    def waiting_for(step, message):
+    def waiting_for(step, reasons):
         sid = step["id"]
         transition = {}
         if sid not in waiting:
@@ -291,9 +304,10 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
         progress.update(
             sid,
             **transition,
-            message=message,
+            wait_reasons=reasons,
             resource_wait_seconds=max(0, time.monotonic() - waiting[sid]),
         )
+        return bool(transition)
 
     def ready(step):
         sid = step["id"]
@@ -301,6 +315,7 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
             sid,
             resource_wait_seconds=max(0, time.monotonic() - waiting.pop(sid, time.monotonic())),
             message="",
+            wait_reasons=[],
         )
 
     def execute(step, inputs):
@@ -358,47 +373,48 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
             ):
                 for step in spec.steps:
                     if not step.get("depends_on"):
-                        waiting_for(step, "Waiting for task resources")
+                        waiting_for(step, ["legacy_task_resources"])
+                progress.update(force=True)
                 runtime.budget.wait()
                 if cancelled.is_set():
                     raise Cancelled("task cancellation requested")
         while len(results) < len(spec.steps):
             if cancelled.is_set():
                 raise Cancelled("task cancellation requested")
-            ready_steps = [
-                s
-                for s in spec.steps
-                if s["id"] not in submitted and set(s.get("depends_on", [])) <= results.keys()
-            ]
             grants = set()
+            reasons = {}
             if spec.scheduling == "operator" and ready_steps:
-                grants = runtime.budget.schedule(
+                admission = runtime.budget.admit(
                     runtime.owner,
                     [
                         (f"{assignment['attempt_id']}:{s['id']}", s["workload"], s["resources"])
-                        for s in ready_steps
+                        for s in new_requests
                     ],
                 )
-            for step in ready_steps:
+                grants, reasons = admission["granted"], admission["waiting"]
+            new_requests.clear()
+            wait_changed = False
+            for step in list(ready_steps.values()):
                 deps = step.get("depends_on", [])
                 kind = step.get("workload", "cpu")
-                if step["id"] not in submitted and set(deps) <= results.keys():
-                    if (
-                        sum(s.get("workload", "cpu") == kind for s in running.values())
-                        >= limits[kind]
-                    ):
-                        waiting_for(step, f"Waiting for {kind.upper()} concurrency slot")
-                        continue
-                    key = f"{assignment['attempt_id']}:{step['id']}"
-                    if spec.scheduling == "operator" and key not in grants:
-                        waiting_for(step, "Waiting for executor CPU/memory or IO concurrency")
-                        continue
-                    ready(step)
-                    pool = runtime.io if kind == "io" else runtime.dag
-                    future = pool.submit(execute, step, {d: results[d] for d in deps})
-                    future.add_done_callback(lambda _: runtime.budget.wake())
-                    running[future] = step
-                    submitted.add(step["id"])
+                key = f"{assignment['attempt_id']}:{step['id']}"
+                if active_counts[kind] >= limits[kind]:
+                    wait_changed = (
+                        waiting_for(step, reasons.get(key) or [kind + "_pool"]) or wait_changed
+                    )
+                    continue
+                if spec.scheduling == "operator" and key not in grants:
+                    wait_changed = waiting_for(step, reasons.get(key, [])) or wait_changed
+                    continue
+                ready(step)
+                pool = runtime.io if kind == "io" else runtime.dag
+                future = pool.submit(execute, step, {d: results[d] for d in deps})
+                future.add_done_callback(lambda _: runtime.budget.wake())
+                running[future] = step
+                active_counts[kind] += 1
+                ready_steps.pop(step["id"])
+            if wait_changed:
+                progress.update(force=True)
             if not running:
                 runtime.budget.wait()
                 progress.update()
@@ -407,13 +423,20 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
             if not done:
                 runtime.budget.wait()
                 done, _ = wait(running, timeout=0, return_when=FIRST_COMPLETED)
+            released = []
             for future in done:
                 step = running.pop(future)
                 results[step["id"]] = future.result()
+                active_counts[step.get("workload", "cpu")] -= 1
                 if spec.scheduling == "operator":
-                    runtime.budget.release(
-                        runtime.owner, f"{assignment['attempt_id']}:{step['id']}"
-                    )
+                    released.append(f"{assignment['attempt_id']}:{step['id']}")
+                for sid in dependents[step["id"]]:
+                    remaining[sid] -= 1
+                    if remaining[sid] == 0:
+                        ready_steps[sid] = by_id[sid]
+                        new_requests.append(by_id[sid])
+            if released:
+                runtime.budget.release_many(runtime.owner, released)
             progress.update()
         if not runtime.idle():
             raise PermanentError("operator left unfinished context.map work")

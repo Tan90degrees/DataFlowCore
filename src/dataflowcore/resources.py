@@ -17,6 +17,21 @@ from time import monotonic
 
 from .contracts import Invalid, cpu_units, integer, number
 
+WAIT_REASONS = ("cpu", "memory", "io_concurrency", "cpu_pool", "io_pool", "aging")
+
+
+def _eligible(request, owners):
+    owner, kind = owners[request["owner"]], request["workload"]
+    return owner[kind + "_count"] < owner[kind + "_limit"]
+
+
+def _fits(request, free):
+    return (
+        request["cpu"] <= free[0]
+        and request["memory"] <= free[1]
+        and (request["workload"] != "io" or free[2] >= 1)
+    )
+
 
 class ResourceBudget:
     def __init__(self, path, cpu=None, memory_mb=None, io_concurrency=32, aging_seconds=2):
@@ -123,36 +138,86 @@ class ResourceBudget:
             "COALESCE(SUM(workload='io'),0) io, COUNT(*) active FROM requests WHERE granted=1"
         ).fetchone()
 
-    def dispatch(self, db):
+    @staticmethod
+    def owner_usage(db):
+        return {
+            row["owner"]: dict(row)
+            for row in db.execute(
+                "SELECT o.owner,o.cpu_limit,o.io_limit,o.notification,COALESCE(SUM(r.cpu),0) cpu, "
+                "COALESCE(SUM(r.memory),0) memory,COALESCE(SUM(r.workload='cpu'),0) cpu_count, "
+                "COALESCE(SUM(r.workload='io'),0) io_count FROM owners o LEFT JOIN requests r "
+                "ON r.owner=o.owner AND r.granted=1 GROUP BY o.owner"
+            )
+        }
+
+    @staticmethod
+    def queue_diagnostics(pending, capacity, owners, used, owner=None):
+        free = (
+            capacity["cpu"] - used[0],
+            capacity["memory"] - used[1],
+            capacity["io_limit"] - used[2],
+        )
+
+        head = next((row for row in pending if _eligible(row, owners)), None)
+        protected = head is not None and monotonic() - head["created"] >= capacity["aging_seconds"]
+        protected = protected and not _fits(head, free)
+        surplus = tuple(
+            max(0, available - reserved)
+            for available, reserved in zip(
+                free,
+                (head["cpu"], head["memory"], head["workload"] == "io") if protected else (0, 0, 0),
+                strict=True,
+            )
+        )
+        counts = dict.fromkeys(WAIT_REASONS, 0)
+        waiting = {}
+        for row in pending:
+            if owner is not None and row["owner"] != owner:
+                continue
+            reasons = []
+            if row["cpu"] > free[0]:
+                reasons.append("cpu")
+            if row["memory"] > free[1]:
+                reasons.append("memory")
+            if row["workload"] == "io" and free[2] < 1:
+                reasons.append("io_concurrency")
+            if not _eligible(row, owners):
+                reasons.append(row["workload"] + "_pool")
+            if (
+                protected
+                and row is not head
+                and _eligible(row, owners)
+                and _fits(row, free)
+                and not _fits(row, surplus)
+            ):
+                reasons.append("aging")
+            for reason in reasons:
+                counts[reason] += 1
+            waiting[row["key"] if owner is not None else (row["owner"], row["key"])] = reasons
+        return {
+            "waiting": waiting,
+            "waiting_by_reason": counts,
+            "protected_resources": {
+                "cpu": head["cpu"] / 1000,
+                "memory_mb": head["memory"],
+                "io_operators": int(head["workload"] == "io"),
+            }
+            if protected
+            else None,
+        }
+
+    def dispatch(self, db, diagnostic_owner=None):
         pending = [
             dict(r) for r in db.execute("SELECT * FROM requests WHERE granted=0 ORDER BY seq")
         ]
         if not pending:
-            return set()
+            return (set(), {}) if diagnostic_owner is not None else set()
         capacity, used = db.execute("SELECT * FROM capacity WHERE id=1").fetchone(), self.totals(db)
         cpu, memory, io = used["cpu"], used["memory"], used["io"]
-        owners = {}
-        for row in db.execute(
-            "SELECT o.owner,o.cpu_limit,o.io_limit,o.notification,COALESCE(SUM(r.cpu),0) cpu, "
-            "COALESCE(SUM(r.memory),0) memory,COALESCE(SUM(r.workload='cpu'),0) cpu_count, "
-            "COALESCE(SUM(r.workload='io'),0) io_count FROM owners o LEFT JOIN requests r "
-            "ON r.owner=o.owner AND r.granted=1 GROUP BY o.owner"
-        ):
-            owners[row["owner"]] = dict(row)
+        owners = self.owner_usage(db)
         now = monotonic()
         grants = set()
-
-        def eligible(row):
-            owner = owners[row["owner"]]
-            kind = row["workload"]
-            return owner[kind + "_count"] < owner[kind + "_limit"]
-
-        def fits(row, free):
-            return (
-                row["cpu"] <= free[0]
-                and row["memory"] <= free[1]
-                and (row["workload"] != "io" or free[2] >= 1)
-            )
+        changed_owners = set()
 
         def share(row):
             owner = owners[row["owner"]]
@@ -163,13 +228,13 @@ class ResourceBudget:
             ), row["seq"]
 
         while pending:
-            runnable = [r for r in pending if eligible(r)]
+            runnable = [r for r in pending if _eligible(r, owners)]
             if not runnable:
                 break
             free = (capacity["cpu"] - cpu, capacity["memory"] - memory, capacity["io_limit"] - io)
             head = min(runnable, key=lambda r: r["seq"])
             protected = now - head["created"] >= capacity["aging_seconds"]
-            if protected and fits(head, free):
+            if protected and _fits(head, free):
                 selected = head
             else:
                 if protected:
@@ -180,7 +245,7 @@ class ResourceBudget:
                         max(0, free[1] - head["memory"]),
                         max(0, free[2] - (head["workload"] == "io")),
                     )
-                candidates = [r for r in runnable if fits(r, free)]
+                candidates = [r for r in runnable if _fits(r, free)]
                 if not candidates:
                     break
                 selected = min(candidates, key=share)
@@ -190,21 +255,27 @@ class ResourceBudget:
             owner["cpu"] += selected["cpu"]
             owner["memory"] += selected["memory"]
             owner[selected["workload"] + "_count"] += 1
-            db.execute(
-                "UPDATE owners SET peak_cpu=MAX(peak_cpu,?), peak_memory=MAX(peak_memory,?) "
-                "WHERE owner=?",
-                (owner["cpu"], owner["memory"], selected["owner"]),
-            )
+            changed_owners.add(selected["owner"])
             cpu += selected["cpu"]
             memory += selected["memory"]
             io += selected["workload"] == "io"
             pending.remove(selected)
         if grants:
+            db.executemany(
+                "UPDATE owners SET peak_cpu=MAX(peak_cpu,?), peak_memory=MAX(peak_memory,?) "
+                "WHERE owner=?",
+                [(owners[name]["cpu"], owners[name]["memory"], name) for name in changed_owners],
+            )
             db.execute(
                 "UPDATE capacity SET peak_cpu=MAX(peak_cpu,?), peak_memory=MAX(peak_memory,?), "
                 "peak_io=MAX(peak_io,?) WHERE id=1",
                 (cpu, memory, io),
             )
+        if diagnostic_owner is not None:
+            diagnostic = self.queue_diagnostics(
+                pending, capacity, owners, (cpu, memory, io), diagnostic_owner
+            )
+            return grants, diagnostic["waiting"]
         return grants
 
     def configure_owner(self, owner, cpu_limit, io_limit):
@@ -231,6 +302,13 @@ class ResourceBudget:
             return {"cpu": row[0] / 1000, "memory_mb": row[1]}
 
     def schedule(self, owner, requests):
+        return self._schedule(owner, requests, diagnostics=False)
+
+    def admit(self, owner, requests):
+        """Enqueue new requests, then return grants and snapshot-consistent wait reasons."""
+        return self._schedule(owner, requests, diagnostics=True)
+
+    def _schedule(self, owner, requests, diagnostics):
         values = []
         for key, workload, resources in requests:
             cpu, memory = round(cpu_units(resources["cpu"]) * 1000), resources["memory_mb"]
@@ -242,26 +320,31 @@ class ResourceBudget:
             capacity = db.execute("SELECT * FROM capacity WHERE id=1").fetchone()
             if any(v[3] > capacity["cpu"] or v[4] > capacity["memory"] for v in values):
                 raise Invalid("operator resources exceed executor capacity")
-            db.execute(
-                "INSERT OR IGNORE INTO owners(owner,cpu_limit,io_limit,notification) "
-                "VALUES(?,256,256,?)",
-                (owner, str(self.notify_path)),
-            )
-            db.executemany(
-                "INSERT OR IGNORE INTO requests(owner,key,workload,cpu,memory,created) "
-                "VALUES(?,?,?,?,?,?)",
-                values,
-            )
-            existing = {
-                r["key"]: r for r in db.execute("SELECT * FROM requests WHERE owner=?", (owner,))
-            }
-            if any(
-                (existing[v[1]]["workload"], existing[v[1]]["cpu"], existing[v[1]]["memory"])
-                != v[2:5]
-                for v in values
-            ):
-                raise Invalid("resource request identity cannot change")
-            dispatched = self.dispatch(db)
+            if values:
+                db.execute(
+                    "INSERT OR IGNORE INTO owners(owner,cpu_limit,io_limit,notification) "
+                    "VALUES(?,256,256,?)",
+                    (owner, str(self.notify_path)),
+                )
+                db.executemany(
+                    "INSERT OR IGNORE INTO requests(owner,key,workload,cpu,memory,created) "
+                    "VALUES(?,?,?,?,?,?)",
+                    values,
+                )
+                existing = {
+                    r["key"]: r
+                    for r in db.execute("SELECT * FROM requests WHERE owner=?", (owner,))
+                }
+                if any(
+                    (existing[v[1]]["workload"], existing[v[1]]["cpu"], existing[v[1]]["memory"])
+                    != v[2:5]
+                    for v in values
+                ):
+                    raise Invalid("resource request identity cannot change")
+            dispatched = self.dispatch(db, diagnostic_owner=owner if diagnostics else None)
+            waiting = {}
+            if diagnostics:
+                dispatched, waiting = dispatched
             granted = {
                 r[0]
                 for r in db.execute(
@@ -270,7 +353,7 @@ class ResourceBudget:
             }
         if dispatched:
             self.notify(dispatched, include_self=False)
-        return granted
+        return {"granted": granted, "waiting": waiting} if diagnostics else granted
 
     def acquire(self, owner, key, workload, resources):
         return key in self.schedule(owner, [(key, workload, resources)])
@@ -292,6 +375,15 @@ class ResourceBudget:
         if removed_notification and removed_notification != str(self.notify_path):
             Path(removed_notification).unlink(missing_ok=True)
 
+    def release_many(self, owner, keys):
+        """Release a completion batch and dispatch once, without reclaiming the owner."""
+        with self.transaction() as db:
+            db.executemany(
+                "DELETE FROM requests WHERE owner=? AND key=?", [(owner, key) for key in keys]
+            )
+            granted = self.dispatch(db)
+        self.notify(granted)
+
     def snapshot(self):
         with self.lock:
             db = self.connection
@@ -299,10 +391,17 @@ class ResourceBudget:
                 db.execute("BEGIN")
                 capacity = db.execute("SELECT * FROM capacity WHERE id=1").fetchone()
                 used = self.totals(db)
-                waiting = db.execute("SELECT COUNT(*) FROM requests WHERE granted=0").fetchone()[0]
-                oldest = db.execute("SELECT MIN(created) FROM requests WHERE granted=0").fetchone()[
-                    0
+                pending = [
+                    dict(row)
+                    for row in db.execute("SELECT * FROM requests WHERE granted=0 ORDER BY seq")
                 ]
+                oldest = min((row["created"] for row in pending), default=None)
+                diagnostic = self.queue_diagnostics(
+                    pending,
+                    capacity,
+                    self.owner_usage(db),
+                    (used["cpu"], used["memory"], used["io"]),
+                )
                 db.commit()
             except BaseException:
                 db.rollback()
@@ -311,7 +410,9 @@ class ResourceBudget:
             "cpu": used["cpu"] / 1000,
             "memory_mb": used["memory"],
             "active_operators": used["active"],
-            "waiting_operators": waiting,
+            "waiting_operators": len(pending),
+            "waiting_by_reason": diagnostic["waiting_by_reason"],
+            "protected_resources": diagnostic["protected_resources"],
             "io_operators": used["io"],
             "cpu_capacity": capacity["cpu"] / 1000,
             "memory_capacity_mb": capacity["memory"],

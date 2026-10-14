@@ -1,0 +1,174 @@
+{
+  "workload": "Validated tiny operators: chain and independent roots; resident runtime",
+  "caveat": "Measures orchestration overhead, not production model or file throughput",
+  "trials": {
+    "chain": [
+      {
+        "shape": "chain",
+        "steps": 1000,
+        "reports_per_step": 20,
+        "elapsed_seconds": 16.196874963000027,
+        "cpu_seconds": 15.904365509,
+        "steps_per_second": 61.74030498379407,
+        "progress_snapshots": 2003,
+        "fsync_calls": 2003,
+        "write_transactions": 2001,
+        "request_insert_statements": 1000,
+        "core_version": "0.7.0",
+        "source_sha256": "6791c43b6f1e3ce0916693da8f0719ebb890e9550c66a10a36b18136075f4550",
+        "python": "3.14.8",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+        "cpu_count": 9,
+        "executor_budget": {
+          "cpu": 4,
+          "memory_mb": 1024,
+          "cpu_pool": 4
+        },
+        "gil_enabled": false,
+        "validated_steps": 1000
+      },
+      {
+        "shape": "chain",
+        "steps": 1000,
+        "reports_per_step": 20,
+        "elapsed_seconds": 16.68552839599988,
+        "cpu_seconds": 16.413875924000003,
+        "steps_per_second": 59.93217453273675,
+        "progress_snapshots": 2002,
+        "fsync_calls": 2002,
+        "write_transactions": 2001,
+        "request_insert_statements": 1000,
+        "core_version": "0.7.0",
+        "source_sha256": "6791c43b6f1e3ce0916693da8f0719ebb890e9550c66a10a36b18136075f4550",
+        "python": "3.14.8",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+        "cpu_count": 9,
+        "executor_budget": {
+          "cpu": 4,
+          "memory_mb": 1024,
+          "cpu_pool": 4
+        },
+        "gil_enabled": false,
+        "validated_steps": 1000
+      },
+      {
+        "shape": "chain",
+        "steps": 1000,
+        "reports_per_step": 20,
+        "elapsed_seconds": 16.147157977999996,
+        "cpu_seconds": 16.121355034000004,
+        "steps_per_second": 61.9304029453647,
+        "progress_snapshots": 2002,
+        "fsync_calls": 2002,
+        "write_transactions": 2001,
+        "request_insert_statements": 1000,
+        "core_version": "0.7.0",
+        "source_sha256": "6791c43b6f1e3ce0916693da8f0719ebb890e9550c66a10a36b18136075f4550",
+        "python": "3.14.8",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+        "cpu_count": 9,
+        "executor_budget": {
+          "cpu": 4,
+          "memory_mb": 1024,
+          "cpu_pool": 4
+        },
+        "gil_enabled": false,
+        "validated_steps": 1000
+      }
+    ],
+    "wide": [
+      {
+        "shape": "wide",
+        "steps": 1000,
+        "reports_per_step": 20,
+        "elapsed_seconds": 27.126547375999962,
+        "cpu_seconds": 27.001770604000004,
+        "steps_per_second": 36.86425648421235,
+        "progress_snapshots": 2998,
+        "fsync_calls": 2998,
+        "write_transactions": 1258,
+        "request_insert_statements": 125847,
+        "core_version": "0.7.0",
+        "source_sha256": "6791c43b6f1e3ce0916693da8f0719ebb890e9550c66a10a36b18136075f4550",
+        "python": "3.14.8",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+        "cpu_count": 9,
+        "executor_budget": {
+          "cpu": 4,
+          "memory_mb": 1024,
+          "cpu_pool": 4
+        },
+        "gil_enabled": false,
+        "validated_steps": 1000
+      },
+      {
+        "shape": "wide",
+        "steps": 1000,
+        "reports_per_step": 20,
+        "elapsed_seconds": 27.55401202600001,
+        "cpu_seconds": 27.728887114999992,
+        "steps_per_second": 36.292355503670336,
+        "progress_snapshots": 2998,
+        "fsync_calls": 2998,
+        "write_transactions": 1257,
+        "request_insert_statements": 125761,
+        "core_version": "0.7.0",
+        "source_sha256": "6791c43b6f1e3ce0916693da8f0719ebb890e9550c66a10a36b18136075f4550",
+        "python": "3.14.8",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+        "cpu_count": 9,
+        "executor_budget": {
+          "cpu": 4,
+          "memory_mb": 1024,
+          "cpu_pool": 4
+        },
+        "gil_enabled": false,
+        "validated_steps": 1000
+      },
+      {
+        "shape": "wide",
+        "steps": 1000,
+        "reports_per_step": 20,
+        "elapsed_seconds": 27.650490792000028,
+        "cpu_seconds": 27.879695567000013,
+        "steps_per_second": 36.16572333281422,
+        "progress_snapshots": 2998,
+        "fsync_calls": 2998,
+        "write_transactions": 1256,
+        "request_insert_statements": 125541,
+        "core_version": "0.7.0",
+        "source_sha256": "6791c43b6f1e3ce0916693da8f0719ebb890e9550c66a10a36b18136075f4550",
+        "python": "3.14.8",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+        "cpu_count": 9,
+        "executor_budget": {
+          "cpu": 4,
+          "memory_mb": 1024,
+          "cpu_pool": 4
+        },
+        "gil_enabled": false,
+        "validated_steps": 1000
+      }
+    ]
+  },
+  "median": {
+    "chain": {
+      "elapsed_seconds": 16.196874963000027,
+      "cpu_seconds": 16.121355034000004,
+      "steps_per_second": 61.74030498379407,
+      "progress_snapshots": 2002,
+      "fsync_calls": 2002,
+      "request_insert_statements": 1000,
+      "write_transactions": 2001
+    },
+    "wide": {
+      "elapsed_seconds": 27.55401202600001,
+      "cpu_seconds": 27.728887114999992,
+      "steps_per_second": 36.292355503670336,
+      "progress_snapshots": 2998,
+      "fsync_calls": 2998,
+      "request_insert_statements": 125761,
+      "write_transactions": 1257
+    }
+  }
+}

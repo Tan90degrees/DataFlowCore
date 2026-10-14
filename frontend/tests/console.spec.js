@@ -258,6 +258,7 @@ test("per-operator resource editing, IO bypass and resource-wait cancellation", 
     await page.screenshot({path: "test-results/operator-editor.png", fullPage: true});
     const tid = await submit(page);
     await expect(page.locator(".step-row").filter({hasText: "count"})).toContainText("等待资源");
+    await expect(page.locator(".step-row").filter({hasText: "count"})).toContainText("等待 CPU 预算");
     const task = await (await request.get(base + `/v1/tasks/${tid}`, {headers})).json();
     expect(task.scheduling).toBe("operator");
     expect(task.placement.cpu).toBe(4);
@@ -266,6 +267,7 @@ test("per-operator resource editing, IO bypass and resource-wait cancellation", 
     expect(task.spec.steps.find(s => s.id === "read").resources).toEqual({cpu: 0, memory_mb: 64});
     expect(task.spec.steps.find(s => s.id === "count").resources).toEqual({cpu: 4, memory_mb: 128});
     expect(task.attempts.at(-1).progress.steps.read.state).toBe("SUCCEEDED");
+    expect(task.attempts.at(-1).progress.steps.count.wait_reasons).toContain("cpu");
     await page.getByRole("button", {name: "停止任务", exact: true}).click();
     await page.locator("#confirm-yes").click();
     await expect(page.locator(".title-meta .badge")).toHaveText("已取消");
