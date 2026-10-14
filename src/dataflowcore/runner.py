@@ -121,24 +121,30 @@ def runner_main(
                 )
             completed = job["attempt_id"]
             runtime.completed_tasks += 1
-            retire = (
-                payload["state"] != "SUCCEEDED"
-                or not runtime.safe_to_reuse()
-                or group_has_children()
-                or (max_tasks and runtime.completed_tasks >= max_tasks)
-            )
+            reasons = []
+            if payload["state"] != "SUCCEEDED":
+                reasons.append("task_not_succeeded")
+            if not runtime.idle():
+                reasons.append("unfinished_pool_work")
+            elif not runtime.safe_to_reuse():
+                reasons.append("unmanaged_threads")
+            if group_has_children():
+                reasons.append("child_processes")
+            if max_tasks and runtime.completed_tasks >= max_tasks:
+                reasons.append("task_limit")
             atomic_json(
                 root / "state.json",
                 {
-                    "state": "RETIRE" if retire else "READY",
+                    "state": "RETIRE" if reasons else "READY",
                     "pid": os.getpid(),
                     "completed_attempt": completed,
                     "completed_tasks": runtime.completed_tasks,
+                    "retire_reasons": reasons,
                 },
                 durable=False,
             )
             notify_parent()
-            if retire:
+            if reasons:
                 return
     finally:
         if notify_fd is not None:

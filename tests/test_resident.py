@@ -1,9 +1,11 @@
 """Acceptance with real API, resident processes, threads, signals and artifacts."""
 
 import os
+import threading
 import time
 from pathlib import Path
 
+from dataflowcore.runner_runtime import TrackedPool
 from tests.test_e2e import until
 
 OBSERVE = [
@@ -28,6 +30,45 @@ def dead(pid, generation=None):
         return Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1][0] == "Z"
     except FileNotFoundError:
         return True
+
+
+def test_started_idle_pool_worker_is_owned_even_without_executing_a_job(monkeypatch):
+    first_started, release_first = threading.Event(), threading.Event()
+    second_started, release_second = threading.Event(), threading.Event()
+    original_run = threading.Thread.run
+
+    def delay_second_start(thread):
+        if thread.name == "idle-owner_1":
+            second_started.set()
+            release_second.wait(5)
+        original_run(thread)
+
+    monkeypatch.setattr(threading.Thread, "run", delay_second_start)
+    pool = TrackedPool(2, "idle-owner")
+
+    def first_job():
+        first_started.set()
+        release_first.wait(5)
+
+    try:
+        first = pool.submit(first_job)
+        assert first_started.wait(5)
+        second = pool.submit(lambda: 42)
+        assert second_started.wait(5)
+        release_first.set()
+        first.result(timeout=5)
+        assert second.result(timeout=5) == 42  # The first worker stole the queued job.
+        release_second.set()
+        until(lambda: len(pool.thread_snapshot()) == 2)
+        assert pool.idle()
+        assert {thread.name for thread in pool.thread_snapshot()} == {
+            "idle-owner_0",
+            "idle-owner_1",
+        }
+    finally:
+        release_first.set()
+        release_second.set()
+        pool.executor.shutdown(wait=True)
 
 
 def test_pid_resources_and_both_thread_pools_reused_with_fresh_task_state(cluster):

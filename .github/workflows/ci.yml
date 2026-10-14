@@ -56,6 +56,15 @@ jobs:
         run: |
           python scripts/benchmark_internal.py --baseline-source .e2e/baseline-0.6 --repetitions 2 --files 16 --interval 2 --idle-seconds 8 --dsn "$DATAFLOW_TEST_DATABASE_URL" --output .e2e/internal-efficiency/default.json
           python scripts/verify_efficiency.py .e2e/internal-efficiency/default.json
+      - uses: actions/checkout@v4
+        with:
+          ref: 8155264073b0cc3cab8abe6295d3aa0666381d14
+          path: .e2e/baseline-0.7
+      - name: Large DAG correctness and overhead regression
+        run: |
+          PYTHONPATH="$PWD/.e2e/baseline-0.7/src" python scripts/benchmark_dag.py --steps 1000 --repetitions 2 --output .e2e/dag-runtime/before.json
+          python scripts/benchmark_dag.py --steps 1000 --repetitions 2 --output .e2e/dag-runtime/after.json
+          python scripts/verify_dag_efficiency.py .e2e/dag-runtime/before.json .e2e/dag-runtime/after.json
           python -c 'import json; print(json.dumps(json.load(open(".e2e/internal-efficiency/default.json"))["summary"]))'
       - name: Native PostgreSQL and shared-file restore drill
         run: python scripts/verify_backup_restore.py --dsn "$DATAFLOW_TEST_DATABASE_URL" --pg-container "${{ job.services.postgres.id }}"
@@ -68,6 +77,7 @@ jobs:
             .e2e/operators/*.json
             .e2e/backup-restore-evidence.json
             .e2e/internal-efficiency/*.json
+            .e2e/dag-runtime/*.json
           include-hidden-files: true
       - run: python -m build
       - uses: azure/setup-helm@v4.3.0

@@ -14,6 +14,7 @@ from . import __version__
 from .contracts import APIBusy, Backpressure, Conflict, Invalid, Missing, Paused, TaskSpec, integer
 from .control_lock import ControlLock, ControlLost
 from .observability import FailureLog, HTTPMetrics, route_label
+from .resources import WAIT_REASONS
 from .runtime import under_root
 from .store import Store
 from .uploads import DEFAULT_DIR, DEFAULT_MAX_BYTES, UploadError, Uploads
@@ -310,6 +311,12 @@ class Handler(BaseHTTPRequestHandler):
                             "waiting_operators",
                             "paused",
                         )
+                    )
+                    + "# TYPE dataflow_operator_waiting gauge\n"
+                    + "".join(
+                        f'dataflow_operator_waiting{{reason="{reason}"}} '
+                        f"{telemetry['waiting_by_reason'][reason]}\n"
+                        for reason in WAIT_REASONS
                     )
                     + "# TYPE dataflow_reconciliation_last_success_timestamp_seconds gauge\n"
                     + "dataflow_reconciliation_last_success_timestamp_seconds "

@@ -1,0 +1,71 @@
+{
+  "runtime": {
+    "python": "3.14.8 free-threading build (main, Oct  3 2026, 01:06:51) [Clang 22.1.3 ]",
+    "free_threaded_build": true,
+    "gil_enabled": false
+  },
+  "package_version": "0.8.0",
+  "run_id": "a1fce7e088eb4132b4d77632003f414a",
+  "measured_at_utc": "2026-10-14T18:06:07Z",
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+  "logical_cpus": 9,
+  "affinity_cpus": 9,
+  "cpu_quota": "800000 100000",
+  "source_digest": "acfe1c68261f6f106b48a406d792c9e5533b3a8a9de904fad8a69e82d5777cf6",
+  "business_source_digest": "95098214d6a35bcbc300a9f3122f2c05a667f3f74e339ceda42118c61c3096c8",
+  "baseline_revision": null,
+  "config": {
+    "files": 120,
+    "workers": 2,
+    "slots": 4,
+    "interval": 0.5,
+    "characters_per_file": 2048,
+    "fixture_http_delay_seconds": 0.01,
+    "store": "sqlite",
+    "embedding_workers": 4,
+    "cpu_rounds": 0,
+    "polling": "batch",
+    "scheduling": "operator",
+    "worker_cpu": 8,
+    "worker_memory_mb": 2048
+  },
+  "elapsed_seconds": 1.2885441160001392,
+  "files_per_second": 93.128359758842,
+  "chunks_per_second": 465.64179879421,
+  "submit_p95_ms": 4.883590000190452,
+  "query_p95_ms": 6.183973000133847,
+  "queue_p50_ms": 499.0115165710449,
+  "queue_p95_ms": 746.0026741027832,
+  "execution_p95_ms": 67.02828407287598,
+  "used_executors": 2,
+  "runner_processes_used": 8,
+  "runner_reused_tasks": 112,
+  "rss_scope": "runner_lifetime",
+  "successful_files": 120,
+  "validated_index_rows": 600,
+  "attempts": 120,
+  "poll_requests": 13,
+  "control_peak_sampled_rss_bytes": null,
+  "fixture_peak_http_requests": 29,
+  "task_peak_rss_bytes": 45010944,
+  "task_cpu_seconds": 1.4769799999999997,
+  "step_p95_seconds": {
+    "parse": 0.0021376609802246094,
+    "chunk": 0.0005643367767333984,
+    "stats": 0.0005393028259277344,
+    "embed": 0.03347635269165039,
+    "index": 0.0034859180450439453,
+    "receipt": 0.00029158592224121094
+  },
+  "scheduler_peaks": {
+    "peak_cpu": 6.1,
+    "peak_memory_mb": 896,
+    "peak_io_operators": 4
+  },
+  "scheduler_policy": "fair_backfill_with_aging",
+  "attempt_resource_peaks": {
+    "cpu": 2.0,
+    "memory_mb": 256
+  },
+  "resource_wait_p95_seconds": 0
+}

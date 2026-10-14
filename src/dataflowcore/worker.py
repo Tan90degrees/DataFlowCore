@@ -210,9 +210,10 @@ class Worker:
                 if time.monotonic() - slot.started_at < 1:
                     continue
                 log.info(
-                    "runner_replaced pid=%s code=%s tail=%s",
+                    "runner_replaced pid=%s code=%s reasons=%s tail=%s",
                     slot.process.pid,
                     slot.process.returncode,
+                    self.read_json(slot.workspace / "state.json", {}).get("retire_reasons", []),
                     slot.logs.tail()[-2000:],
                 )
                 self.signal_group(slot, signal.SIGKILL)

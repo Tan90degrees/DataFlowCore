@@ -18,8 +18,14 @@ const states = {
   draining: "排空中",
 };
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
+const waitReasons = {
+  cpu: "CPU 预算", memory: "内存预算", io_concurrency: "执行器 IO 并发配额",
+  cpu_pool: "本槽位 CPU 线程池", io_pool: "本槽位 IO 线程池",
+  aging: "老请求资源保护", legacy_task_resources: "历史任务资源预留",
+};
+const waitText = (reasons) => (reasons || []).map(reason => waitReasons[reason] || reason).join("、");
 let api = null,
-  version = "0.7.0",
+  version = "0.8.0",
   epoch = 0,
   refreshing = false,
   connected = false;
@@ -727,7 +733,8 @@ function renderDetail() {
               "div",
               {},
               h("strong", {}, s.id),
-              h("p", { class: "hint" }, state.message || s.callable),
+              h("p", { class: "hint" }, state.wait_reasons?.length
+                ? `等待 ${waitText(state.wait_reasons)}` : state.message || s.callable),
               s.resources ? h("p", { class: "hint" }, `${(s.workload || "cpu").toUpperCase()} · CPU ${s.resources.cpu} · ${s.resources.memory_mb} MiB · 等待 ${seconds(state.resource_wait_seconds)}`) : null,
             ),
             h("span", { class: "muted" }, seconds(state.duration_seconds)),
@@ -938,6 +945,13 @@ function renderWorkers() {
               ["IO 运行 / 上限", worker.scheduler ? `${worker.scheduler.io_operators} / ${worker.scheduler.io_concurrency}` : "—"],
               ["调度策略", worker.scheduler?.policy === "fair_backfill_with_aging" ? "资源回填 / 公平份额 / 老请求保护" : "—"],
               ["最长资源等待", seconds(worker.scheduler?.oldest_wait_seconds)],
+              ["等待瓶颈（可重复计数）", worker.scheduler?.waiting_by_reason
+                ? Object.entries(worker.scheduler.waiting_by_reason).filter(([, count]) => count > 0)
+                  .map(([reason, count]) => `${waitReasons[reason] || reason} ${count}`).join(" / ") || "无等待"
+                : "—"],
+              ["老请求保护需求", worker.scheduler?.protected_resources
+                ? `CPU ${worker.scheduler.protected_resources.cpu} / ${worker.scheduler.protected_resources.memory_mb} MiB / IO ${worker.scheduler.protected_resources.io_operators}`
+                : "未触发"],
               ["最近心跳", date(worker.last_seen)],
             ]),
             h(
