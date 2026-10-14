@@ -224,6 +224,7 @@ __marimo__/
 /.dataflow-worker/
 /.env
 /*.db
+*.controller.lock
 /dist/
 # Independent console dependencies and acceptance artifacts
 node_modules/

@@ -68,7 +68,10 @@ def test_preflight_allowlist(browser_api):
     }
     status, result, _ = request(browser_api, "/v1/tasks", "OPTIONS", **headers)
     assert status == 204
-    assert result["Access-Control-Allow-Headers"] == "Authorization, Content-Type, Idempotency-Key"
+    assert (
+        result["Access-Control-Allow-Headers"]
+        == "Authorization, Content-Type, Idempotency-Key, X-Request-ID"
+    )
     assert request(browser_api, "/v1/worker/claim", "OPTIONS", **headers)[0] == 403
     assert (
         request(

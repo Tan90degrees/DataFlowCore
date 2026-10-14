@@ -15,15 +15,18 @@ from contextlib import contextmanager
 from .contracts import (
     ACTIVE,
     TERMINAL,
+    Backpressure,
     Conflict,
     Invalid,
     Missing,
+    Paused,
     TaskSpec,
     canonical,
     fingerprint,
     integer,
     number,
 )
+from .security import request_actor
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
@@ -56,6 +59,16 @@ CREATE TABLE IF NOT EXISTS events (
  kind TEXT NOT NULL, payload TEXT NOT NULL, created_at DOUBLE PRECISION NOT NULL
 );
 CREATE INDEX IF NOT EXISTS events_task ON events(task_id, created_at);
+CREATE TABLE IF NOT EXISTS control_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS audit (
+ id TEXT PRIMARY KEY, created_at DOUBLE PRECISION NOT NULL, principal TEXT NOT NULL,
+ role TEXT NOT NULL, request_id TEXT, action TEXT NOT NULL, target TEXT, payload TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS audit_time ON audit(created_at, id);
+CREATE INDEX IF NOT EXISTS attempts_retention ON attempts(state, finished_at);
+CREATE TABLE IF NOT EXISTS attempt_cleanup (
+ attempt_id TEXT PRIMARY KEY REFERENCES attempts(id), cleaned_at DOUBLE PRECISION NOT NULL
+);
 """
 
 
@@ -88,7 +101,9 @@ class Session:
 
 
 class Store:
-    def __init__(self, dsn: str, lease_seconds: float = 30):
+    def __init__(
+        self, dsn: str, lease_seconds: float = 30, max_unfinished=10000, db_timeout_ms=5000
+    ):
         if lease_seconds <= 0:
             raise Invalid("lease_seconds must be positive")
         self.dsn = dsn
@@ -96,14 +111,20 @@ class Store:
         if not self.postgres and not dsn.startswith("sqlite:///"):
             raise Invalid("use postgresql:// or sqlite:///path")
         self.lease_seconds = lease_seconds
+        self.max_unfinished = integer(max_unfinished, "max unfinished tasks", 0, 10000000)
+        self.db_timeout_ms = integer(db_timeout_ms, "database timeout ms", 100, 600000)
 
     @contextmanager
     def transaction(self, write=True):
         if self.postgres:
             import psycopg
+            from psycopg import IsolationLevel
             from psycopg.rows import dict_row
 
             connection = psycopg.connect(self.dsn, row_factory=dict_row, connect_timeout=5)
+            if not write:
+                connection.isolation_level = IsolationLevel.REPEATABLE_READ
+                connection.read_only = True
         else:
             connection = sqlite3.connect(self.dsn.removeprefix("sqlite:///"), timeout=15)
             connection.row_factory = sqlite3.Row
@@ -111,6 +132,14 @@ class Store:
             connection.execute("PRAGMA busy_timeout = 15000")
         try:
             session = Session(connection, self.postgres)
+            if self.postgres:
+                session.execute(
+                    "SELECT set_config('statement_timeout', ?, true)", (str(self.db_timeout_ms),)
+                )
+                session.execute(
+                    "SELECT set_config('lock_timeout', ?, true)",
+                    (str(min(2000, self.db_timeout_ms)),),
+                )
             if self.postgres and write:
                 session.execute("SELECT pg_advisory_xact_lock(441002, 1)")
             elif not self.postgres:
@@ -152,7 +181,88 @@ class Store:
             (uid(), task_id, attempt_id, kind, canonical(payload), now),
         )
 
-    def submit(self, spec: TaskSpec, request_key: str):
+    @staticmethod
+    def audit(db, action, target=None, payload=None):
+        actor = request_actor.get() or {"principal": "system", "role": "system"}
+        db.execute(
+            "INSERT INTO audit VALUES (?,?,?,?,?,?,?,?)",
+            (
+                uid(),
+                db.now(),
+                actor["principal"],
+                actor["role"],
+                actor.get("request_id"),
+                action,
+                target,
+                canonical(payload or {}),
+            ),
+        )
+
+    @staticmethod
+    def paused(db):
+        row = db.one("SELECT value FROM control_settings WHERE key='paused'")
+        return bool(row and row["value"] == "true")
+
+    def control(self):
+        with self.transaction(False) as db:
+            count = db.one(
+                "SELECT COUNT(*) n FROM tasks WHERE state IN ('QUEUED','RUNNING','STOPPING')"
+            )["n"]
+            running = db.one(
+                "SELECT COUNT(*) n FROM attempts WHERE state IN ('RUNNING','STOPPING')"
+            )["n"]
+            return {
+                "paused": self.paused(db),
+                "unfinished_tasks": count,
+                "active_attempts": running,
+                "max_unfinished_tasks": self.max_unfinished,
+            }
+
+    def set_paused(self, value):
+        if type(value) is not bool:
+            raise Invalid("paused must be a boolean")
+        with self.transaction() as db:
+            db.execute(
+                "INSERT INTO control_settings(key,value) VALUES ('paused',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (canonical(value),),
+            )
+            self.audit(db, "control.paused" if value else "control.resumed")
+        return self.control()
+
+    def audit_page(self, limit=100, before=None):
+        integer(limit, "audit limit", 1, 200)
+        values = []
+        where = ""
+        if before:
+            try:
+                created, identity = json.loads(base64.urlsafe_b64decode(before))
+                number(created, "audit cursor timestamp", 0, 1e15)
+                if not isinstance(identity, str) or len(identity) > 100:
+                    raise ValueError()
+            except (ValueError, TypeError, UnicodeError) as exc:
+                raise Invalid("invalid audit cursor") from exc
+            where = "WHERE (created_at < ? OR (created_at = ? AND id < ?))"
+            values = [created, created, identity]
+        with self.transaction(False) as db:
+            rows = db.all(
+                f"SELECT * FROM audit {where} ORDER BY created_at DESC,id DESC LIMIT ?",
+                (*values, limit + 1),
+            )
+        selected = rows[:limit]
+        cursor = (
+            base64.urlsafe_b64encode(
+                canonical([selected[-1]["created_at"], selected[-1]["id"]]).encode()
+            ).decode()
+            if len(rows) > limit
+            else None
+        )
+        return {
+            "events": [{**r, "payload": json.loads(r["payload"])} for r in selected],
+            "next_cursor": cursor,
+        }
+
+    def submit(self, spec: TaskSpec, request_key: str, retry_of=None):
         spec = TaskSpec.parse(spec.json())
         encoded = canonical(spec.storage())
         hashed = fingerprint(spec.json())
@@ -163,6 +273,16 @@ class Store:
                 if existing["request_hash"] != hashed and fingerprint(previous.json()) != hashed:
                     raise Conflict("idempotency key reused with a different specification")
                 return self.decode_task(existing)
+            if self.paused(db):
+                raise Paused("new submissions are paused for maintenance")
+            if (
+                self.max_unfinished
+                and db.one(
+                    "SELECT COUNT(*) n FROM tasks WHERE state IN ('QUEUED','RUNNING','STOPPING')"
+                )["n"]
+                >= self.max_unfinished
+            ):
+                raise Backpressure("unfinished task limit reached; retry later with the same key")
             now, tid = db.now(), uid()
             db.execute(
                 """INSERT INTO tasks
@@ -171,6 +291,12 @@ class Store:
                 (tid, request_key, hashed, encoded, now, now, now),
             )
             self.event(db, tid, None, "submitted", {}, now)
+            self.audit(
+                db,
+                "task.retried" if retry_of else "task.submitted",
+                tid,
+                {"retry_of": retry_of} if retry_of else {},
+            )
             return self.decode_task(db.one("SELECT * FROM tasks WHERE id = ?", (tid,)))
 
     def register(self, session_id, name, pool, runtime_version, slots, cpu, memory_mb):
@@ -208,6 +334,7 @@ class Store:
         with self.transaction() as db:
             self.worker(db, session_id)
             db.execute("UPDATE workers SET draining = 1 WHERE session_id = ?", (session_id,))
+            self.audit(db, "worker.drained", session_id)
         return {"session_id": session_id, "draining": True}
 
     @staticmethod
@@ -228,7 +355,11 @@ class Store:
                     raise Conflict("claim id belongs to another worker")
                 self.valid(db, old["task_id"], old["id"], session_id, old["token"], now)
                 return self.assignment(db, old)
-            if worker["draining"] or now - worker["last_seen"] > self.lease_seconds:
+            if (
+                self.paused(db)
+                or worker["draining"]
+                or now - worker["last_seen"] > self.lease_seconds
+            ):
                 return None
             running = db.all(
                 "SELECT task_id FROM attempts WHERE worker_session = ? "
@@ -459,15 +590,16 @@ class Store:
                         (task["current_attempt"],),
                     )
                 self.event(db, tid, task["current_attempt"], "cancel_requested", {}, now)
+                self.audit(db, "task.cancelled", tid)
             return self.decode_task(db.one("SELECT * FROM tasks WHERE id = ?", (tid,)))
 
     def retry(self, tid, request_key):
         # A new task identity retains its link to the previous failed/cancelled task.
-        old = self.get(tid)
+        old = self.get(tid, compact=True)
         if old["state"] not in ("FAILED", "CANCELLED"):
             raise Conflict("only failed or cancelled tasks can be manually retried")
         spec = TaskSpec.parse({"scheduling": old["scheduling"], **old["spec"]})
-        return self.submit(spec, f"retry:{tid}:{request_key}")
+        return self.submit(spec, f"retry:{tid}:{request_key}", retry_of=tid)
 
     @staticmethod
     def decode_task(row):
@@ -495,25 +627,157 @@ class Store:
                 }
         return task
 
-    def get(self, tid):
+    def get(self, tid, compact=False, attempt_id=None):
         with self.transaction(False) as db:
             row = db.one("SELECT * FROM tasks WHERE id = ?", (tid,))
             if row is None:
                 raise Missing("unknown task")
             result = self.decode_task(row)
+            fields = "*"
+            values = (tid,)
+            if compact:
+                fields = (
+                    "id,task_id,number,worker_session,state,started_at,finished_at,lease_until,"
+                    "deadline,error,CASE WHEN id=? OR id=? THEN progress ELSE '{}' END progress,"
+                    "CASE WHEN id=? OR id=? THEN result ELSE NULL END result,"
+                    "CASE WHEN id=? OR id=? THEN 1 ELSE 0 END detail_loaded"
+                )
+                values = (row["current_attempt"], attempt_id) * 3 + (tid,)
             result["attempts"] = [
                 {
                     k: json.loads(v) if k in ("progress", "result") and v is not None else v
                     for k, v in a.items()
                     if k not in ("token", "completion_hash", "claim_id")
                 }
-                for a in db.all("SELECT * FROM attempts WHERE task_id = ? ORDER BY number", (tid,))
+                for a in db.all(
+                    f"SELECT {fields} FROM attempts WHERE task_id = ? ORDER BY number", values
+                )
             ]
+            if attempt_id is not None and not any(
+                a["id"] == attempt_id for a in result["attempts"]
+            ):
+                raise Missing("unknown attempt for this task")
+            if row["state"] == "QUEUED":
+                result["queue_diagnostic"] = self.queue_diagnostic(db, row)
             return result
 
-    def events(self, tid, limit=200):
-        self.get(tid)
+    def queue_diagnostic(self, db, task):
+        now = db.now()
+        if self.paused(db):
+            return {"code": "MAINTENANCE", "message": "管控处于维护暂停，暂不分发新任务"}
+        if task["available_at"] > now:
+            return {
+                "code": "RETRY_BACKOFF",
+                "message": "等待故障重试退避",
+                "retry_in_seconds": task["available_at"] - now,
+            }
+        spec = json.loads(task["spec"])
+        candidates = db.all(
+            "SELECT * FROM workers WHERE last_seen >= ?", (now - self.lease_seconds,)
+        )
+        stages = (
+            (lambda w: True, "NO_ONLINE_WORKER", "没有在线执行器"),
+            (lambda w: w["pool"] == spec["pool"], "POOL_MISMATCH", "没有匹配执行池的在线执行器"),
+            (
+                lambda w: w["runtime_version"] == spec["runtime_version"],
+                "VERSION_MISMATCH",
+                "没有匹配运行版本的在线执行器",
+            ),
+            (lambda w: not w["draining"], "DRAINING", "匹配的执行器都在排空"),
+            (
+                lambda w: w["cpu"] >= spec["cpu"] and w["memory_mb"] >= spec["memory_mb"],
+                "RESOURCE_TOO_LARGE",
+                "单算子放置需求超过匹配执行器容量",
+            ),
+        )
+        for predicate, code, message in stages:
+            candidates = [w for w in candidates if predicate(w)]
+            if not candidates:
+                return {"code": code, "message": message}
+        active = {
+            r["worker_session"]: r["n"]
+            for r in db.all(
+                "SELECT worker_session,COUNT(*) n FROM attempts "
+                "WHERE state IN ('RUNNING','STOPPING') GROUP BY worker_session"
+            )
+        }
+        if all(active.get(w["session_id"], 0) >= w["slots"] for w in candidates):
+            return {"code": "NO_FREE_SLOT", "message": "匹配的执行器槽位已满"}
+        return {
+            "code": "WAITING_FOR_CLAIM",
+            "message": "等待执行器下一次领取，或历史任务预留资源释放",
+        }
+
+    def ping(self):
         with self.transaction(False) as db:
+            db.one("SELECT 1 AS ok")
+
+    def telemetry(self):
+        with self.transaction(False) as db:
+            now = db.now()
+            task_counts = {
+                r["state"]: r["n"]
+                for r in db.all("SELECT state,COUNT(*) n FROM tasks GROUP BY state")
+            }
+            attempt_counts = {
+                r["state"]: r["n"]
+                for r in db.all("SELECT state,COUNT(*) n FROM attempts GROUP BY state")
+            }
+            oldest = db.one(
+                "SELECT MIN(available_at) t FROM tasks WHERE state='QUEUED' AND available_at <= ?",
+                (now,),
+            )["t"]
+            workers = db.one(
+                "SELECT COUNT(*) online,COALESCE(SUM(slots),0) slots FROM workers "
+                "WHERE last_seen >= ? AND draining=0",
+                (now - self.lease_seconds,),
+            )
+            return {
+                "tasks": task_counts,
+                "attempts": attempt_counts,
+                "oldest_queue_seconds": max(0, now - oldest) if oldest else 0,
+                "online_workers": workers["online"],
+                "worker_slots": workers["slots"],
+                "paused": int(self.paused(db)),
+            }
+
+    def output_cleanup_candidates(self, cutoff, limit=200):
+        number(cutoff, "cleanup cutoff", 0, 1e15)
+        integer(limit, "cleanup limit", 1, 10000)
+        with self.transaction(False) as db:
+            return db.all(
+                "SELECT a.id,a.task_id,a.finished_at FROM attempts a "
+                "JOIN tasks t ON a.task_id=t.id "
+                "WHERE a.state IN ('FAILED','CANCELLED','LOST') AND a.finished_at < ? "
+                "AND t.state IN ('SUCCEEDED','FAILED','CANCELLED') "
+                "AND NOT EXISTS (SELECT 1 FROM attempt_cleanup c WHERE c.attempt_id=a.id) "
+                "ORDER BY a.finished_at,a.id LIMIT ?",
+                (cutoff, limit),
+            )
+
+    def output_referenced(self, path):
+        expression = (
+            "result::jsonb->>'output_dir'"
+            if self.postgres
+            else "json_extract(result,'$.output_dir')"
+        )
+        with self.transaction(False) as db:
+            return bool(
+                db.one(f"SELECT id FROM tasks WHERE ({expression}) = ? LIMIT 1", (str(path),))
+            )
+
+    def mark_outputs_cleaned(self, attempt_id, removed):
+        with self.transaction() as db:
+            db.execute(
+                "INSERT INTO attempt_cleanup VALUES (?,?) ON CONFLICT(attempt_id) DO NOTHING",
+                (attempt_id, db.now()),
+            )
+            self.audit(db, "outputs.cleaned", attempt_id, {"removed": removed})
+
+    def events(self, tid, limit=200):
+        with self.transaction(False) as db:
+            if db.one("SELECT id FROM tasks WHERE id=?", (tid,)) is None:
+                raise Missing("unknown task")
             rows = db.all(
                 "SELECT * FROM events WHERE task_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
                 (tid, limit),
@@ -555,22 +819,33 @@ class Store:
             clauses.append("(created_at < ? OR (created_at = ? AND id < ?))")
             values.extend([created, created, tid])
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        fields = "*"
+        if summary:
+            fields = (
+                "id,state,attempt_count,current_attempt,available_at,created_at,updated_at,error,"
+                f"({self.json_field('name')}) AS name,({self.json_field('pool')}) AS pool,"
+                f"COALESCE(({self.json_field('scheduling')}),'task') AS scheduling,"
+                f"({self.json_field('cpu', True)}) AS placement_cpu,"
+                f"({self.json_field('memory_mb', True)}) AS placement_memory"
+            )
         with self.transaction(False) as db:
             rows = db.all(
-                f"SELECT * FROM tasks {where} ORDER BY created_at DESC, id DESC LIMIT ?",
+                f"SELECT {fields} FROM tasks {where} ORDER BY created_at DESC, id DESC LIMIT ?",
                 (*values, limit + 1),
             )
         selected = rows[:limit]
-        tasks = [self.decode_task(r) for r in selected]
         if summary:
             tasks = [
                 {
-                    **{k: v for k, v in t.items() if k not in ("spec", "result", "request_key")},
-                    "name": t["spec"]["name"],
-                    "pool": t["spec"]["pool"],
+                    **{
+                        k: v for k, v in t.items() if k not in ("placement_cpu", "placement_memory")
+                    },
+                    "placement": {"cpu": t["placement_cpu"], "memory_mb": t["placement_memory"]},
                 }
-                for t in tasks
+                for t in selected
             ]
+        else:
+            tasks = [self.decode_task(r) for r in selected]
         next_cursor = None
         if len(rows) > limit:
             last = selected[-1]
@@ -633,4 +908,14 @@ class Store:
             return {
                 r["state"]: r["n"]
                 for r in db.all("SELECT state, COUNT(*) AS n FROM tasks GROUP BY state")
+            }
+
+    def overview(self):
+        with self.transaction(False) as db:
+            return {
+                "task_counts": {
+                    r["state"]: r["n"]
+                    for r in db.all("SELECT state,COUNT(*) n FROM tasks GROUP BY state")
+                },
+                "paused": self.paused(db),
             }

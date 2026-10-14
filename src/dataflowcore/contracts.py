@@ -30,6 +30,20 @@ class Missing(Exception):
     pass
 
 
+class Backpressure(Exception):
+    status = 429
+    code = "admission_limit"
+
+
+class Paused(Backpressure):
+    status = 503
+    code = "maintenance_paused"
+
+
+class APIBusy(Backpressure):
+    code = "api_concurrency"
+
+
 def canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 

@@ -4,6 +4,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: false
+        default: ''
 permissions:
   contents: read
 jobs:
@@ -26,11 +32,13 @@ jobs:
       PSYCOPG_IMPL: python
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: actions/setup-python@v6
         with:
           python-version: '3.14t'
       - run: sudo apt-get update && sudo apt-get install -y libpq5
-      - run: python -m pip install -e '.[postgres,dev]'
+      - run: python -m pip install -c constraints/production.txt -e '.[postgres,dev]'
       - run: ruff check . && ruff format --check .
       - run: dataflow doctor
       - run: python -c 'import psycopg; import sys; assert not sys._is_gil_enabled()'
@@ -40,6 +48,8 @@ jobs:
           python scripts/business_benchmark.py --files 24 --workers 2 --slots 4 --dsn "$DATAFLOW_TEST_DATABASE_URL" --output .e2e/business-postgres.json
           python scripts/business_benchmark.py --files 120 --workers 2 --slots 4 --chars 2048 --dsn "$DATAFLOW_TEST_DATABASE_URL" --output .e2e/business-batch-120.json
           python scripts/benchmark_operator_scheduling.py --files 8 --repetitions 1 --dsn "$DATAFLOW_TEST_DATABASE_URL" --output-dir .e2e/operators
+      - name: Native PostgreSQL and shared-file restore drill
+        run: python scripts/verify_backup_restore.py --dsn "$DATAFLOW_TEST_DATABASE_URL" --pg-container "${{ job.services.postgres.id }}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -47,12 +57,16 @@ jobs:
           path: |
             .e2e/business-*.json
             .e2e/operators/*.json
+            .e2e/backup-restore-evidence.json
           include-hidden-files: true
       - run: python -m build
       - uses: azure/setup-helm@v4.3.0
         with:
           version: v3.17.3
       - run: helm lint charts/dataflowcore && helm template demo charts/dataflowcore --set console.enabled=true > /tmp/rendered.yaml
+      - run: python scripts/verify_chart.py /tmp/rendered.yaml
+      - run: helm lint charts/dataflowcore -f charts/dataflowcore/values-production.yaml && helm template demo charts/dataflowcore -f charts/dataflowcore/values-production.yaml --set monitoring.enabled=true --set networkPolicy.enabled=true --set ingress.enabled=true > /tmp/production.yaml
+      - run: python scripts/verify_chart.py /tmp/production.yaml
       - run: helm package charts/dataflowcore --destination dist
       - uses: actions/upload-artifact@v4
         with:
@@ -63,6 +77,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: actions/setup-python@v6
         with:
           python-version: '3.14t'
@@ -96,6 +112,8 @@ jobs:
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: actions/setup-python@v6
         with:
           python-version: '3.14t'

@@ -169,6 +169,8 @@ class Worker:
             runner_io_map_workers,
         )
         self.runners = {}
+        self.runner_snapshot = ()
+        self.last_safety_check = time.monotonic()
 
     def request(self, endpoint, data):
         return self.client.request("POST", "/v1/worker/" + endpoint, data)
@@ -203,6 +205,7 @@ class Worker:
             workspace = self.root / f"runner-{index}-{uuid.uuid4().hex}"
             workspace.mkdir()
             self.runners[index] = self.start_runner(workspace)
+            self.runner_snapshot = tuple(self.runners.values())
 
     def start_runner(self, workspace):
         command = [
@@ -301,6 +304,7 @@ class Worker:
         # Networking can block for seconds per attempt. Lease safety must not share
         # the networking loop, especially with many concurrent file tasks.
         while not self.watchdog_stopped.wait(0.05):
+            self.last_safety_check = time.monotonic()
             with self.running_lock:
                 items = list(self.running.values())
             for running in items:
@@ -445,6 +449,36 @@ class Worker:
             else:
                 break
 
+    def health_loop(self):
+        # Dependency outages can block several HTTP calls. They must affect
+        # readiness rather than suppress the independent process safety probe.
+        while not self.watchdog_stopped.is_set():
+            now = time.monotonic()
+            try:
+                atomic_json(
+                    self.root.parent / "health.json",
+                    {
+                        "updated_at": time.time(),
+                        "session_id": self.session,
+                        "draining": self.stopped.is_set() or self.draining,
+                        "registered": self.registered,
+                        "control_contact_age_seconds": now - self.last_contact,
+                        "watchdog_age_seconds": now - self.last_safety_check,
+                        "lease_seconds": self.lease_seconds,
+                        "runner_slots": self.slots,
+                        "live_runners": sum(
+                            slot.process.poll() is None
+                            and self.read_json(slot.workspace / "state.json", {}).get("state")
+                            in ("READY", "BUSY")
+                            for slot in self.runner_snapshot
+                        ),
+                        "scheduler": self.budget.snapshot(),
+                    },
+                )
+            except Exception:
+                log.exception("worker_health_publish_failed")
+            self.watchdog_stopped.wait(0.5)
+
     def run(self):
         require_free_threading(self.allow_gil)
         signal.signal(signal.SIGTERM, lambda *_: self.stopped.set())
@@ -452,6 +486,8 @@ class Worker:
         next_tick = 0
         watchdog = threading.Thread(target=self.lease_watchdog, name="lease-watchdog", daemon=True)
         watchdog.start()
+        health_thread = threading.Thread(target=self.health_loop, name="worker-health", daemon=True)
+        health_thread.start()
         try:
             self.ensure_runners()
             while not self.stopped.is_set() or self.running:
@@ -464,23 +500,6 @@ class Worker:
                             self.clean(aid, running)
                 if not self.stopped.is_set():
                     self.ensure_runners()
-                atomic_json(
-                    self.root.parent / "health.json",
-                    {
-                        "updated_at": time.time(),
-                        "session_id": self.session,
-                        "draining": self.stopped.is_set() or self.draining,
-                        "registered": self.registered,
-                        "runner_slots": self.slots,
-                        "live_runners": sum(
-                            slot.process.poll() is None
-                            and self.read_json(slot.workspace / "state.json", {}).get("state")
-                            in ("READY", "BUSY")
-                            for slot in self.runners.values()
-                        ),
-                        "scheduler": self.budget.snapshot(),
-                    },
-                )
                 if now >= next_tick:
                     try:
                         self.tick()
@@ -491,6 +510,7 @@ class Worker:
         finally:
             self.watchdog_stopped.set()
             watchdog.join(timeout=2)
+            health_thread.join(timeout=6)
             for aid, running in list(self.running.items()):
                 self.signal_group(running, signal.SIGKILL)
                 running.process.wait(timeout=2)

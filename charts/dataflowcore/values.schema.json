@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "worker": {
+      "type": "object",
+      "properties": {
+        "slots": {"type": "integer", "minimum": 1},
+        "cpu": {"type": "integer", "minimum": 1, "maximum": 1024},
+        "memoryMB": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        "runnerDagWorkers": {"type": "integer", "minimum": 1, "maximum": 256},
+        "runnerMapWorkers": {"type": "integer", "minimum": 1, "maximum": 256},
+        "runnerIoWorkers": {"type": "integer", "minimum": 1, "maximum": 256},
+        "runnerIoMapWorkers": {"type": "integer", "minimum": 1, "maximum": 256},
+        "runnerMaxTasks": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "ioConcurrency": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "resourceAgingSeconds": {"type": "number", "minimum": 0, "maximum": 3600}
+      }
+    },
+    "control": {
+      "type": "object",
+      "properties": {
+        "maxUnfinished": {"type": "integer", "minimum": 0, "maximum": 10000000},
+        "dbTimeoutMS": {"type": "integer", "minimum": 100, "maximum": 600000},
+        "uploadMinFreeBytes": {"type": "integer", "minimum": 0, "maximum": 1125899906842624},
+        "uploadMaxBytes": {"type": "integer", "minimum": 0, "maximum": 1099511627776},
+        "uploadConcurrency": {"type": "integer", "minimum": 1, "maximum": 32},
+        "operatorModules": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+# Replace registry/host/secrets/PVC with deployment-owned values.
+console:
+  enabled: true
+control:
+  maxUnfinished: 10000
+  dbTimeoutMS: 5000
+  uploadMinFreeBytes: 1073741824
+  operatorModules: [dataflowcore.operators, dataflowcore.examples.ingestion]
+worker:
+  replicas: 2
+workerDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+# Enable after configuring your real ingress/monitoring peers and CNI enforcement.
+networkPolicy:
+  enabled: false
+ingress:
+  enabled: false
+  className: nginx
+  host: dataflow.example.com
+  tlsSecret: dataflow-tls
+monitoring:
+  enabled: false

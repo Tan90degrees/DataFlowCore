@@ -2,7 +2,7 @@
   "name": "word-count",
   "input_path": "/dataflow/input.txt",
   "pool": "default",
-  "runtime_version": "0.5.0",
+  "runtime_version": "0.6.0",
   "max_attempts": 3,
   "retry_delay": 2,
   "timeout": 300,

@@ -27,6 +27,8 @@ def test_independent_watchdog_kills_live_task_during_blocked_network(tmp_path):
     worker.registered = True
     watchdog = threading.Thread(target=worker.lease_watchdog)
     watchdog.start()
+    health = threading.Thread(target=worker.health_loop)
+    health.start()
     blocked = threading.Event()
 
     def request(endpoint, data):
@@ -44,11 +46,15 @@ def test_independent_watchdog_kills_live_task_during_blocked_network(tmp_path):
         assert until(lambda: process.poll() is not None, timeout=2)
         assert tick.is_alive(), "networking is still blocked when the process is terminated"
         assert running.invalid
+        probe = until(lambda: Worker.read_json(tmp_path / "work" / "health.json"))
+        assert time.time() - probe["updated_at"] < 2
+        assert probe["watchdog_age_seconds"] < 1
     finally:
         blocked.set()
         tick.join(timeout=5)
         worker.watchdog_stopped.set()
         watchdog.join(timeout=2)
+        health.join(timeout=2)
         if process.poll() is None:
             worker.signal_group(running, signal.SIGKILL)
         process.wait(timeout=3)

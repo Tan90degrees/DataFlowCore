@@ -1,5 +1,8 @@
 # 操作与验收
 
+0.6.0 的维护、背压、凭证、监控、清理和备份恢复见 [生产运维](production-operations.md)，
+交付边界与环境依赖见 [工业化 GAP](production-gaps.md)。
+
 | 现象 | 检查 |
 |---|---|
 | QUEUED未运行 | workers的online、pool/runtime_version和资源/槽位 |
@@ -21,7 +24,7 @@ kubectl logs <worker-pod> --tail=200
 
 运行中stdout/stderr尾部在/work/<session>/<attempt>/task.log，可kubectl exec读取。
 最后16KiB通过进度log_tail持久化，任务结束后清理本地工作目录。Pod删除后尚未上报
-的日志可能丢失；完整业务日志由部署日志系统采集。历史任务/产物自动GC尚未实现。
+的日志可能丢失；完整业务日志由部署日志系统采集。失败产物可显式清理，成功产物和历史记录仍保留。
 默认租约30秒、interval2秒、停止宽限5秒、尝试3次。发现时间约为租约加reaper周期，
 数据库/API故障会影响恢复时间。管控长时间不可用，旧任务停止，恢复后允许整文件重试。
 
