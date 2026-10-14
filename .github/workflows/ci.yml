@@ -64,7 +64,9 @@ jobs:
         with:
           version: v3.17.3
       - run: helm lint charts/dataflowcore && helm template demo charts/dataflowcore --set console.enabled=true > /tmp/rendered.yaml
+      - run: python scripts/verify_chart.py /tmp/rendered.yaml
       - run: helm lint charts/dataflowcore -f charts/dataflowcore/values-production.yaml && helm template demo charts/dataflowcore -f charts/dataflowcore/values-production.yaml --set monitoring.enabled=true --set networkPolicy.enabled=true --set ingress.enabled=true > /tmp/production.yaml
+      - run: python scripts/verify_chart.py /tmp/production.yaml
       - run: helm package charts/dataflowcore --destination dist
       - uses: actions/upload-artifact@v4
         with:

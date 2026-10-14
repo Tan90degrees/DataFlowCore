@@ -27,11 +27,11 @@ spec:
           ports: [{name: http, containerPort: 8080}]
           env:
             - name: DATAFLOW_MAX_UNFINISHED
-              value: {{ dig "maxUnfinished" 10000 .Values.control | quote }}
+              value: {{ dig "maxUnfinished" 10000 .Values.control | int64 | quote }}
             - name: DATAFLOW_DB_TIMEOUT_MS
-              value: {{ dig "dbTimeoutMS" 5000 .Values.control | quote }}
+              value: {{ dig "dbTimeoutMS" 5000 .Values.control | int64 | quote }}
             - name: DATAFLOW_UPLOAD_MIN_FREE_BYTES
-              value: {{ dig "uploadMinFreeBytes" 67108864 .Values.control | quote }}
+              value: {{ dig "uploadMinFreeBytes" 67108864 .Values.control | int64 | quote }}
             - name: DATAFLOW_OPERATOR_MODULES
               value: {{ join "," (dig "operatorModules" (list) .Values.control) | quote }}
             - name: DATAFLOW_VIEWER_TOKENS

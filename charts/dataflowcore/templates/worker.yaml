@@ -38,11 +38,11 @@ spec:
             - --url
             - "http://{{ .Release.Name }}-control:8080"
             - --slots
-            - "{{ .Values.worker.slots }}"
+            - "{{ .Values.worker.slots | int64 }}"
             - --cpu
-            - "{{ .Values.worker.cpu }}"
+            - "{{ .Values.worker.cpu | int64 }}"
             - --memory-mb
-            - "{{ .Values.worker.memoryMB }}"
+            - "{{ .Values.worker.memoryMB | int64 }}"
             - --pool
             - "{{ .Values.worker.pool }}"
             - --runtime-version
@@ -52,17 +52,17 @@ spec:
             - --stop-grace
             - "{{ .Values.worker.stopGrace }}"
             - --runner-dag-workers
-            - "{{ .Values.worker.runnerDagWorkers }}"
+            - "{{ .Values.worker.runnerDagWorkers | int64 }}"
             - --runner-map-workers
-            - "{{ .Values.worker.runnerMapWorkers }}"
+            - "{{ .Values.worker.runnerMapWorkers | int64 }}"
             - --runner-max-tasks
-            - "{{ .Values.worker.runnerMaxTasks }}"
+            - "{{ .Values.worker.runnerMaxTasks | int64 }}"
             - --runner-io-workers
-            - "{{ dig "runnerIoWorkers" 16 .Values.worker }}"
+            - "{{ dig "runnerIoWorkers" 16 .Values.worker | int64 }}"
             - --runner-io-map-workers
-            - "{{ dig "runnerIoMapWorkers" 16 .Values.worker }}"
+            - "{{ dig "runnerIoMapWorkers" 16 .Values.worker | int64 }}"
             - --io-concurrency
-            - "{{ dig "ioConcurrency" 32 .Values.worker }}"
+            - "{{ dig "ioConcurrency" 32 .Values.worker | int64 }}"
             - --resource-aging-seconds
             - "{{ dig "resourceAgingSeconds" 2 .Values.worker }}"
           env:
