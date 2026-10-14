@@ -243,6 +243,10 @@ def run(
                         "contracts.py",
                         "resources.py",
                         "api.py",
+                        "security.py",
+                        "control_lock.py",
+                        "observability.py",
+                        "maintenance.py",
                         "__init__.py",
                     )
                     if (package / name).exists()

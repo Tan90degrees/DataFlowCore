@@ -19,10 +19,13 @@ const states = {
 };
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
 let api = null,
-  version = "0.5.0",
+  version = "0.6.0",
   epoch = 0,
   refreshing = false,
   connected = false;
+let role = "admin", operations = null, auditRows = [], admissionPaused = false;
+const canWrite = () => connected && role !== "viewer";
+const canSubmit = () => canWrite() && !admissionPaused;
 let dataRevision = 0;
 const stoppingTasks = new Set();
 let route = "tasks",
@@ -220,12 +223,15 @@ async function confirm(title, text) {
 }
 function connectionUI() {
   $("#connection-label").textContent = connected
-    ? "API 已连接"
+    ? (role === "viewer" ? "API 已连接（只读）" : "API 已连接")
     : "配置 API 连接";
   $("#connection-dot").className = "live-dot" + (connected ? "" : " offline");
   paintTaskActions();
 }
 function resetData() {
+  admissionPaused = false;
+  operations = null;
+  auditRows = [];
   rows = [];
   workers = [];
   counts = {};
@@ -280,9 +286,11 @@ $("#connect-form").onsubmit = async (event) => {
     }
     api = candidate;
     connected = true;
+    role = overview.role || "admin";
     version = overview.version;
     resetData();
     counts = overview.task_counts;
+    admissionPaused = !!overview.paused;
     localStorage.setItem("dataflow-api-base", api.base);
     $("#api-token").value = "";
     connectionUI();
@@ -326,15 +334,30 @@ async function refresh(manual = false) {
       if (!isCurrent()) return;
       const byId = new Map(status.tasks.map((t) => [t.id, t]));
       counts = overview.task_counts;
+      admissionPaused = !!overview.paused;
       rows = page.tasks.map((t) => ({ ...t, ...byId.get(t.id) }));
       nextCursor = page.next_cursor;
     } else if (activeRoute === "workers") {
       const result = await client.request("/v1/workers");
       if (!isCurrent()) return;
       workers = result.workers;
+    } else if (activeRoute === "operations") {
+      const [control, audit] = await Promise.all([
+        client.request("/v1/control"), client.request("/v1/audit?limit=100"),
+      ]);
+      if (!isCurrent()) return;
+      operations = control;
+      admissionPaused = !!control.paused;
+      auditRows = audit.events;
+    } else if (activeRoute === "dag") {
+      const overview = await client.request("/v1/overview");
+      if (!isCurrent()) return;
+      admissionPaused = !!overview.paused;
+      paintUpload();
     } else if (activeRoute === "detail") {
+      const selectedAttempt = attemptId ? "?attempt=" + encodeURIComponent(attemptId) : "";
       const [task, history] = await Promise.all([
-        client.request(`/v1/tasks/${encodeURIComponent(activeId)}`),
+        client.request(`/v1/tasks/${encodeURIComponent(activeId)}${selectedAttempt}`),
         client.request(`/v1/tasks/${encodeURIComponent(activeId)}/events`),
       ]);
       if (!isCurrent()) return;
@@ -368,7 +391,7 @@ function parseRoute() {
   route =
     parts[0] === "task" && parts[1]
       ? "detail"
-      : ["tasks", "dag", "workers"].includes(parts[0])
+      : ["tasks", "dag", "workers", "operations"].includes(parts[0])
         ? parts[0]
         : "tasks";
   taskId = route === "detail" ? parts[1] : "";
@@ -583,6 +606,7 @@ function stopTaskReason() {
   if (detail.state === "STOPPING")
     return "停止请求已接收，正在等待执行器退出；完成后状态会变为已取消。";
   if (!connected) return "API 未连接或管理令牌已失效，请通过「配置 API 连接」重新连接后停止任务。";
+  if (role === "viewer") return "当前是只读连接，停止任务需要管理令牌。";
   if (stoppingTasks.has(detail.id)) return "正在确认或发送停止请求，请稍候。";
   if (!["QUEUED", "RUNNING"].includes(detail.state))
     return `当前任务状态 ${detail.state} 无法停止，请刷新任务状态。`;
@@ -599,7 +623,7 @@ function paintTaskActions() {
   stop.disabled = !!stopTaskReason();
   stop.title = stopTaskHint();
   $("#task-stop-hint").textContent = stopTaskHint();
-  $("#retry-task").disabled = !connected || !["FAILED", "CANCELLED"].includes(detail?.state);
+  $("#retry-task").disabled = !canWrite() || !["FAILED", "CANCELLED"].includes(detail?.state);
 }
 async function cancelTask() {
   const client = needAPI(),
@@ -674,10 +698,12 @@ function renderDetail() {
     "select",
     {
       "aria-label": "查看尝试",
-      onchange: (event) => {
+      onchange: run(async (event) => {
         attemptId = event.target.value;
+        dataRevision++;
         render();
-      },
+        await refresh();
+      }),
     },
     attempts.map((a) =>
       h(
@@ -756,9 +782,10 @@ function renderDetail() {
       "div",
       {},
       attempt?.error ? h("p", { class: "error-text" }, attempt.error) : null,
-      json(attempt?.result || task.result || { message: "本次尝试尚无结果" }),
+      json(attempt ? attempt.result || { message: "本次尝试尚无结果" } : task.result || {message: "尚无结果"}),
     );
   else body = json(task.spec);
+  if (attempt?.detail_loaded === 0) body = h("p", {class: "hint"}, "正在获取本次尝试详情…");
   const tabs = [
     ["progress", "DAG / 进度"],
     ["logs", "日志"],
@@ -771,7 +798,7 @@ function renderDetail() {
   stopButton.title = stopTaskHint();
   stopButton.setAttribute("aria-describedby", "task-stop-hint");
   const retryButton = button("从头重试", retryTask, "",
-    () => !["FAILED", "CANCELLED"].includes(detail?.state) || !connected);
+    () => !["FAILED", "CANCELLED"].includes(detail?.state) || !canWrite());
   retryButton.id = "retry-task";
   return [
     h("a", { href: "#tasks", class: "back" }, "← 返回任务列表"),
@@ -794,6 +821,7 @@ function renderDetail() {
       ),
     ),
     h("p", { id: "task-stop-hint", class: "hint", role: "status" }, stopTaskHint()),
+    task.queue_diagnostic ? h("p", {id: "queue-reason", class: "hint"}, `排队原因：${task.queue_diagnostic.message}`) : null,
     task.error ? h("p", { class: "error-text" }, task.error) : null,
     h(
       "div",
@@ -850,7 +878,7 @@ function renderDetail() {
             ["执行池", task.spec.pool],
             ["调度粒度", (task.scheduling || task.spec.scheduling) === "task" ? "历史任务模式" : "算子自动准入"],
             ["执行器放置门槛（自动计算）", `CPU ${task.placement?.cpu ?? task.spec.cpu} / ${task.placement?.memory_mb ?? task.spec.memory_mb} MiB`],
-            ["本次执行的资源预留峰值", task.result?.runtime?.peak_resources ? `CPU ${task.result.runtime.peak_resources.cpu} / ${task.result.runtime.peak_resources.memory_mb} MiB` : "—"],
+            ["本次执行的资源预留峰值", attempt?.result?.runtime?.peak_resources ? `CPU ${attempt.result.runtime.peak_resources.cpu} / ${attempt.result.runtime.peak_resources.memory_mb} MiB` : "—"],
             ["运行版本", task.spec.runtime_version],
             ["超时", `${task.spec.timeout} 秒`],
             ["创建时间", date(task.created_at)],
@@ -939,7 +967,7 @@ function renderWorkers() {
                   await refresh();
                 },
                 "ghost",
-                !!worker.draining || !worker.online || !connected,
+                !!worker.draining || !worker.online || !canWrite(),
               ),
             ),
           ),
@@ -960,6 +988,38 @@ function renderWorkers() {
       { class: "hint" },
       "CPU 与内存为调度声明，实际限制由 Pod 资源配置控制。旧会话保留用于审计，心跳过期显示离线。",
     ),
+  ];
+}
+
+function renderOperations() {
+  const state = operations;
+  return [
+    heading("运维", "暂停新提交、上传与任务分发；已有任务继续完成，停止与续租保持可用。",
+      button(state?.paused ? "恢复任务接入" : "暂停任务接入", async () => {
+        const client = needAPI(), actionEpoch = epoch;
+        const paused = !operations.paused;
+        if (!(await confirm(paused ? "暂停任务接入" : "恢复任务接入", paused
+          ? "新提交、上传和分发将暂停，已有执行继续。备份前等待活跃执行与上传都归零。"
+          : "恢复新任务提交、文件上传和执行器领取。"))) return;
+        if (epoch !== actionEpoch || api !== client || !connected) throw new Error("页面或 API 已切换，请重新确认维护操作。");
+        operations = await client.post("/v1/control", {paused});
+        admissionPaused = !!operations.paused;
+        dataRevision++;
+        render();
+        await refresh();
+      }, "primary", () => !canWrite() || !operations)),
+    role === "viewer" ? h("p", {class: "hint"}, "当前为只读连接，维护控制需要管理令牌。") : null,
+    panel("生产状态", state ? kv([
+      ["任务接入", state.paused ? "维护暂停（重启后保留）" : "正常"],
+      ["未结束任务 / 上限", `${state.unfinished_tasks} / ${state.max_unfinished_tasks || "不限制"}`],
+      ["活跃执行 / 上传", `${state.active_attempts} / ${state.active_uploads}`],
+      ["维护静止状态", state.quiescent ? "已暂停且执行与上传归零，可开始受控备份" : "尚未静止"],
+      ["最近恢复扫描成功", date(state.reconciliation_last_success_at)],
+    ]) : empty("连接 API 后查看", "维护与审计状态由管控 API 持久化。")),
+    panel("管理审计（最近 100 条）", auditRows.length ? auditRows.map(event => h("div", {class: "event"},
+      h("span", {class: "muted"}, date(event.created_at)),
+      h("strong", {}, event.action), h("code", {}, `${event.role}:${event.principal} · ${event.target || "control"} · ${event.request_id || "system"}`),
+    )) : empty("暂无审计记录", "任务提交、停止、重试、排空和维护切换与状态同事务记录。")),
   ];
 }
 
@@ -1061,11 +1121,16 @@ function paintUpload() {
   status.textContent = upload.message;
   $("#upload-progress").value = Math.round(upload.fraction * 100);
   $("#upload-progress").hidden = !upload.file;
-  $("#upload-start").disabled = !connected || !upload.file || !!uploadOperation || !!upload.result;
+  $("#upload-start").disabled = !canSubmit() || !upload.file || !!uploadOperation || !!upload.result;
   $("#upload-file").disabled = !!uploadOperation || submitting;
   $("#upload-cancel").hidden = !uploadOperation;
   $("#upload-clear").hidden = !upload.file || !!uploadOperation;
-  $("#submit-dag").disabled = submitting || pendingUpload();
+  $("#submit-dag").disabled = !canSubmit() || submitting || pendingUpload();
+  const hint = $("#admission-status");
+  if (hint) {
+    hint.hidden = !admissionPaused && role !== "viewer";
+    hint.textContent = admissionPaused ? "维护暂停：可编辑与导出草稿，新提交与上传暂不可用。" : "当前为只读连接，上传与提交需要管理令牌。";
+  }
 }
 function cancelUpload() {
   if (!uploadOperation) return;
@@ -1107,7 +1172,7 @@ function renderUpload() {
     h("div", { class: "actions" },
       h("button", {
         type: "button", id: "upload-start", onclick: () => void startUpload(),
-        disabled: !connected || !upload.file || !!uploadOperation || !!upload.result,
+        disabled: !canSubmit() || !upload.file || !!uploadOperation || !!upload.result,
       }, "上传文件"),
       h("button", {
         type: "button", id: "upload-cancel", class: "ghost",
@@ -1227,6 +1292,8 @@ async function importDraft(file) {
   render();
 }
 async function submitDraft() {
+  if (!canWrite()) throw new Error("提交任务需要连接管理令牌；当前连接为只读或未连接。");
+  if (admissionPaused) throw new Error("管控处于维护暂停，请在运维页恢复接入后再提交。");
   if (submitting) return;
   if (pendingUpload()) throw new Error("请先完成文件上传，或清除所选文件后使用共享路径。");
   submitting = true;
@@ -1481,12 +1548,12 @@ function renderDAG() {
     validation = "";
     $("#validation")?.remove();
   });
-  const submitButton = button("提交任务", submitDraft, "primary", submitting || pendingUpload());
+  const submitButton = button("提交任务", submitDraft, "primary", () => !canSubmit() || submitting || pendingUpload());
   submitButton.id = "submit-dag";
   return [
     heading(
       "DAG 编排",
-      "配置文件任务、算子参数与依赖关系，校验后交由管控节点调度。",
+      role === "viewer" ? "当前为只读连接，可编辑和导出本地草稿；上传与提交需要管理令牌。" : "配置文件任务、算子参数与依赖关系，校验后交由管控节点调度。",
       h(
         "div",
         { class: "actions" },
@@ -1502,6 +1569,7 @@ function renderDAG() {
         submitButton,
       ),
     ),
+    h("p", {id: "admission-status", class: "hint", hidden: !admissionPaused && role !== "viewer"}, admissionPaused ? "维护暂停：可编辑与导出草稿，新提交与上传暂不可用。" : "当前为只读连接，上传与提交需要管理令牌。"),
     importInput,
     validation
       ? h(
@@ -1548,6 +1616,7 @@ function render() {
     workers: "执行器",
     dag: "DAG 编排",
     detail: "任务详情",
+    operations: "运维",
   };
   $("#breadcrumb").textContent = titles[route];
   document
@@ -1563,6 +1632,8 @@ function render() {
       ? renderDAG()
       : route === "workers"
         ? renderWorkers()
+        : route === "operations"
+          ? renderOperations()
         : route === "detail"
           ? renderDetail()
           : renderTasks()

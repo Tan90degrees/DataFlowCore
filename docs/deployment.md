@@ -1,8 +1,8 @@
 # 部署
 
 ```bash
-docker build -t <registry>/dataflowcore:0.5.0 .
-docker push <registry>/dataflowcore:0.5.0
+docker build -t <registry>/dataflowcore:0.6.0 .
+docker push <registry>/dataflowcore:0.6.0
 ```
 
 镜像包含管控、执行器和示例算子。业务镜像可FROM基础镜像安装业务Python包；依赖
@@ -21,7 +21,7 @@ kubectl create secret generic dataflowcore-secrets \
   --from-file=worker-token=/secure/worker-token
 helm upgrade --install dataflowcore charts/dataflowcore \
   --set image.repository=<registry>/dataflowcore \
-  --set image.tag=0.5.0 --set-string worker.runtimeVersion=0.5.0 \
+  --set image.tag=0.6.0 --set-string worker.runtimeVersion=0.6.0 \
   --set existingDataClaim=<rwx-pvc-name>
 kubectl rollout status deployment/dataflowcore-control
 kubectl rollout status deployment/dataflowcore-worker
@@ -42,7 +42,7 @@ helm upgrade dataflowcore charts/dataflowcore --reuse-values --set worker.replic
 新增执行器自动领取，不囤积文件。缩容SIGTERM先停止领取再排空；90秒宽限期后未
 结束任务由租约重试。资源预算预留解释器和管理进程开销。
 升级前备份数据库，暂停新提交，等待完成或安排可接受重试；镜像和runtimeVersion
-一起更新。0.5.0沿用schema 1，已有数据保留。旧任务仍绑定原runtimeVersion；升级时保留
+一起更新。0.6.0沿用schema 1，已有数据保留。旧任务仍绑定原runtimeVersion；升级时保留
 旧版本执行器直到排队/重试任务完成，或取消后明确使用新版本重新提交。
 每个执行器预建固定数量的常驻槽位，线程上限、回收次数和重资源复用见
 [常驻运行进程](resident-runners.md)。

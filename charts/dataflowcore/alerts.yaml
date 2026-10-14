@@ -1,0 +1,33 @@
+groups:
+  - name: dataflowcore
+    rules:
+      - alert: DataFlowQueueStalled
+        expr: dataflow_oldest_queue_seconds > 300 and on(instance) dataflow_paused == 0
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "DataFlow queue has waited more than five minutes"
+          description: "Check queue diagnostics: pool, runtime version, single-operator capacity and free slots."
+      - alert: DataFlowNoExecutors
+        expr: dataflow_online_workers == 0 and on(instance) dataflow_tasks{state="QUEUED"} > 0 and on(instance) dataflow_paused == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "Queued DataFlow tasks have no online executor"
+      - alert: DataFlowReconciliationStalled
+        expr: time() - dataflow_reconciliation_last_success_timestamp_seconds > 10
+        for: 30s
+        labels: {severity: critical}
+        annotations:
+          summary: "DataFlow lease recovery is not advancing"
+      - alert: DataFlowAPIErrors
+        expr: sum by(instance) (rate(dataflow_http_requests_total{status="5xx"}[5m])) / clamp_min(sum by(instance) (rate(dataflow_http_requests_total[5m])), 0.001) > 0.05 and on(instance) dataflow_paused == 0
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "DataFlow API error ratio exceeds five percent"
+      - alert: DataFlowLostAttempts
+        expr: delta(dataflow_attempts{state="LOST"}[10m]) > 3
+        labels: {severity: warning}
+        annotations:
+          summary: "Multiple DataFlow attempts lost their leases"

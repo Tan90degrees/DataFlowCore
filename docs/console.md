@@ -1,6 +1,9 @@
 # 独立前端管控台
 
-0.5.0 的「节点配置」可设置 CPU / IO 类型、CPU 和内存 MiB；按算子自动调度。
+前端 0.4.0 新增「运维」页与 viewer 只读模式，显示排队原因，历史尝试详情按需查询。
+运维页可暂停/恢复任务接入并查看额度、活跃执行/上传、静止状态与管理审计。
+
+0.6.0 的「节点配置」可设置 CPU / IO 类型、CPU 和内存 MiB；按算子自动调度。
 任务详情显示资源等待与节点时长，执行器页显示整个执行器的共享预留快照。
 任务配置已移除 CPU、内存和 CPU/IO 并发开关；任务详情显示只读放置门槛和执行峰值，详见
 [算子级资源调度](operator-scheduling.md)。
@@ -102,7 +105,7 @@ HTTPS 页面应连接 HTTPS API。
 
 DAG 校验采用同一个 `TaskSpec.parse` 契约，检查图结构、参数、资源和重试字段，返回规范化配置及拓扑层。此阶段允许尚未挂载的路径和尚未安装的算子；提交时检查文件位置、存在性和内容校验和，执行时检查算子是否可加载。
 
-CPU/内存是调度声明，实际限制由 Pod 资源控制。日志是最多约 16 KiB 的末尾，事件是最近 200 条；完整日志归档、文件预览下载、算子目录/版本注册、用户权限分级、独立 DAG 模板服务未包含在此版本。草稿位于当前浏览器，JSON 导出可用于跨环境迁移。
+CPU/内存是调度声明，实际限制由 Pod 资源控制。日志是最多约 16 KiB 的末尾，事件是最近 200 条；完整日志归档、文件预览下载、算子目录/版本注册、人员/租户细粒度权限、独立 DAG 模板服务未包含在此版本。服务凭证支持 admin/viewer/worker。草稿位于当前浏览器，JSON 导出可用于跨环境迁移。
 
 列表每页 30 条，使用一个批量状态请求获取该页进度，不逐行请求任务详情。详情页仅轮询选中的任务。页面隐藏时暂停刷新，DAG 编辑时不轮询；网络故障保留上次数据和未提交编辑，401 停止轮询。提交和重试使用幂等键，同一页面相同配置的提交响应丢失后可再次确认，不重复创建任务；更改配置会生成新键；确认成功后的主动再次提交或重试创建新任务。刷新页面后内存中的提交键不保留，需先检查任务列表再重新提交。
 
@@ -127,10 +130,10 @@ CPU/内存是调度声明，实际限制由 Pod 资源控制。日志是最多�
 两个镜像分别构建，推送到自己的镜像仓库，不能假设默认 GHCR 镜像已经发布：
 
 ```bash
-docker build -t registry.example.com/dataflowcore:0.5.0 .
-docker build -t registry.example.com/dataflowcore-console:0.3.0 frontend
-docker push registry.example.com/dataflowcore:0.5.0
-docker push registry.example.com/dataflowcore-console:0.3.0
+docker build -t registry.example.com/dataflowcore:0.6.0 .
+docker build -t registry.example.com/dataflowcore-console:0.4.0 frontend
+docker push registry.example.com/dataflowcore:0.6.0
+docker push registry.example.com/dataflowcore-console:0.4.0
 helm upgrade --install dataflowcore charts/dataflowcore \
   --set image.repository=registry.example.com/dataflowcore \
   --set console.enabled=true \

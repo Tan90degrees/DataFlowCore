@@ -38,6 +38,7 @@ env = os.environ | {
     "PYTHONPATH": str(repo / "src"),
     "DATAFLOW_ADMIN_TOKEN": "a" * 32,
     "DATAFLOW_WORKER_TOKEN": "w" * 32,
+    "DATAFLOW_VIEWER_TOKENS": "v" * 32,
 }
 
 

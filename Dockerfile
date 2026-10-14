@@ -15,7 +15,8 @@ RUN uv python install 3.14.8t && uv venv --python 3.14.8t /opt/venv
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
-RUN uv pip install --python /opt/venv/bin/python '.[postgres]' \
+COPY constraints ./constraints
+RUN uv pip install --python /opt/venv/bin/python -c constraints/production.txt '.[postgres]' \
     && /opt/venv/bin/python -c 'import psycopg; import sys; assert not sys._is_gil_enabled()' \
     && dataflow doctor \
     && mkdir -p /work /dataflow && chown -R 10001:10001 /work /dataflow

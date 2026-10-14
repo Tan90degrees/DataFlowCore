@@ -64,10 +64,13 @@ class Uploads:
         concurrency=4,
         timeout=300,
         upload_dir=DEFAULT_DIR,
+        min_free_bytes=0,
+        admission=None,
     ):
         integer(max_bytes, "upload_max_bytes", 0, 1024**4)
         integer(concurrency, "upload_concurrency", 1, 32)
         number(timeout, "upload_timeout", 1, 86400)
+        integer(min_free_bytes, "upload_min_free_bytes", 0, 1024**5)
         self.data_root = Path(data_root).resolve()
         if not isinstance(upload_dir, (str, os.PathLike)):
             raise Invalid("upload_dir must be a non-empty path inside data_root")
@@ -77,9 +80,11 @@ class Uploads:
         self.root = under_root(self.data_root / directory, self.data_root)
         self.staging = under_root(self.root / ".staging", self.root)
         self.max_bytes, self.concurrency, self.timeout = max_bytes, concurrency, timeout
+        self.min_free_bytes, self.admission = min_free_bytes, admission
         self.slots = threading.BoundedSemaphore(concurrency)
         self.lock = threading.Lock()
         self.active = set()
+        self.reservations = {}
         if max_bytes:
             self.staging.mkdir(parents=True, mode=0o700, exist_ok=True)
             # A single controller owns this directory. No task can see staging inputs.
@@ -97,6 +102,7 @@ class Uploads:
             "max_concurrent": self.concurrency,
             "timeout_seconds": self.timeout,
             "upload_dir": str(self.root),
+            "min_free_bytes": self.min_free_bytes,
         }
 
     @staticmethod
@@ -124,11 +130,23 @@ class Uploads:
         if size > self.max_bytes:
             raise UploadError(413, f"file exceeds upload limit of {self.max_bytes} bytes")
         with self.lock:
+            if self.admission is not None:
+                self.admission()
             if key in self.active:
                 raise Conflict("upload with this key is still in progress; retry after it finishes")
             if not self.slots.acquire(blocking=False):
                 raise UploadError(429, "upload slots are busy; retry later")
+            try:
+                needed = size + self.min_free_bytes + sum(self.reservations.values())
+                if shutil.disk_usage(self.root).free < needed:
+                    raise UploadError(
+                        507, "insufficient free upload storage; preserve configured headroom"
+                    )
+            except BaseException:
+                self.slots.release()
+                raise
             self.active.add(key)
+            self.reservations[key] = size
         stage = None
         original_timeout = connection.gettimeout()
         try:
@@ -205,4 +223,5 @@ class Uploads:
                 shutil.rmtree(stage, ignore_errors=True)
             with self.lock:
                 self.active.remove(key)
+                self.reservations.pop(key)
                 self.slots.release()

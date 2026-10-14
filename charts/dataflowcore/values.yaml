@@ -1,7 +1,8 @@
 image:
   repository: ghcr.io/tan90degrees/dataflowcore
-  tag: "0.5.0"
+  tag: "0.6.0"
   pullPolicy: IfNotPresent
+  digest: ""
 # Existing Secret keys: database-url, admin-token, worker-token.
 existingSecret: dataflowcore-secrets
 # Existing ReadWriteMany PVC, mounted at the same absolute path in all Pods.
@@ -10,7 +11,7 @@ leaseSeconds: 30
 worker:
   replicas: 2
   pool: default
-  runtimeVersion: "0.5.0"
+  runtimeVersion: "0.6.0"
   slots: 1
   cpu: 2
   memoryMB: 1024
@@ -29,6 +30,11 @@ worker:
   nodeSelector: {}
   tolerations: []
 control:
+  maxUnfinished: 10000
+  dbTimeoutMS: 5000
+  uploadMinFreeBytes: 67108864
+  # Empty permits all installed trusted code; production should configure prefixes.
+  operatorModules: []
   # Relative to /dataflow, or an absolute directory inside that shared volume.
   uploadDir: uploads
   uploadMaxBytes: 268435456
@@ -43,10 +49,28 @@ console:
   enabled: false
   image:
     repository: ghcr.io/tan90degrees/dataflowcore-console
-    tag: "0.3.0"
+    tag: "0.4.0"
     pullPolicy: IfNotPresent
+    digest: ""
   resources:
     requests: {cpu: "50m", memory: "32Mi"}
     limits: {cpu: "250m", memory: "128Mi"}
 # Only needed for a browser calling the control API directly across origins.
 corsOrigins: []
+workerDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+networkPolicy:
+  enabled: false
+  # Additional peers for direct API clients or an Ingress controller.
+  controlIngressPeers: []
+ingress:
+  enabled: false
+  className: ""
+  host: dataflow.example.com
+  tlsSecret: ""
+monitoring:
+  enabled: false
+  # Requires Prometheus Operator CRDs and a viewer-token in existingSecret.
+  bearerSecretKey: viewer-token
+  labels: {}

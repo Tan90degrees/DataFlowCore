@@ -5,6 +5,9 @@
 `GET /v1/files/limits` 同时返回解析后的绝对 `upload_dir`。目录由管控启动时的 `--upload-dir`/`DATAFLOW_UPLOAD_DIR` 指定（默认 data-root 下的 `uploads`），POST 上传沿用此配置。
 
 管理员接口使用Authorization Bearer admin-token，执行器接口使用独立worker-token。
+0.6.0 增加 viewer 只读凭证、重叠轮换凭证、维护与审计，见 [生产运维](production-operations.md)。
+响应含 X-Request-ID。429/维护 503 含 Retry-After: 5 与 code；用原幂等键稍后重试。
+任务详情默认只展开当前 Attempt；历史为摘要，使用 ?attempt={attempt-id} 按需展开。
 GET /healthz、/readyz、/version为公开探针；/metrics使用管理员认证。
 
 | 方法 | 路径 | 功能 |
@@ -16,6 +19,8 @@ GET /healthz、/readyz、/version为公开探针；/metrics使用管理员认证
 | GET | /v1/tasks | 游标分页，支持状态/池过滤 |
 | POST | /v1/tasks/status | 批量状态摘要，每次1..100个ID |
 | GET | /v1/tasks/{id} | 定义、状态、所有Attempt、进度、错误及结果 |
+| GET/POST | /v1/control | 查看生产状态；管理员暂停/恢复新接入与领取 |
+| GET | /v1/audit | 管理审计游标分页；limit=1..200、cursor |
 | GET | /v1/tasks/{id}/events | 最近200条事件 |
 | POST | /v1/tasks/{id}/cancel | 幂等停止 |
 | POST | /v1/tasks/{id}/retry | 失败/取消后手动重试，必须有Idempotency-Key |
@@ -43,7 +48,7 @@ attempt_id、number、token、完整spec和lease_seconds。续租返回cancel及
 
 任务列表参数：`limit=1..100`（默认100）、`cursor`（使用上次的next_cursor）、
 `state`、`pool`、`summary=1`。返回 `{tasks: [...], next_cursor: string|null}`。
-未指定summary保持原有完整任务字段；批量轮询应使用状态接口，避免反复传输定义/结果。
+默认 summary=1；summary=0 每页最多 10 个完整定义。批量轮询使用状态接口。
 游标按不可变 created_at/id 排序；翻页过程中状态可能变化，过滤列表不是事务快照。
 
 批量状态请求 `{task_ids: ["id1", "id2"]}`，返回 `{tasks: [...], missing: [...]}`。

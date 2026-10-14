@@ -49,6 +49,21 @@ def parser():
     )
     control.add_argument("--insecure", action="store_true", help="development only")
     control.add_argument("--allow-gil", action="store_true", help="development only")
+    control.add_argument(
+        "--max-unfinished", type=int, default=int(os.getenv("DATAFLOW_MAX_UNFINISHED", "10000"))
+    )
+    control.add_argument(
+        "--db-timeout-ms", type=int, default=int(os.getenv("DATAFLOW_DB_TIMEOUT_MS", "5000"))
+    )
+    control.add_argument("--operator-modules", default=os.getenv("DATAFLOW_OPERATOR_MODULES", ""))
+    control.add_argument(
+        "--upload-min-free-bytes",
+        type=int,
+        default=int(os.getenv("DATAFLOW_UPLOAD_MIN_FREE_BYTES", "67108864")),
+    )
+    control.add_argument(
+        "--log-format", choices=("text", "json"), default=os.getenv("DATAFLOW_LOG_FORMAT", "json")
+    )
     worker = commands.add_parser("worker", help="run executor supervisor")
     worker.add_argument("--url", default=os.getenv("DATAFLOW_URL", "http://127.0.0.1:8080"))
     worker.add_argument("--data-root", default=os.getenv("DATAFLOW_DATA_ROOT", "."))
@@ -86,6 +101,18 @@ def parser():
     migrate.add_argument(
         "--dsn", default=os.getenv("DATAFLOW_DATABASE_URL", "sqlite:///dataflow.db")
     )
+    cleanup = commands.add_parser(
+        "gc-failed-outputs", help="preview or remove old failed output directories"
+    )
+    cleanup.add_argument(
+        "--dsn", default=os.getenv("DATAFLOW_DATABASE_URL", "sqlite:///dataflow.db")
+    )
+    cleanup.add_argument("--data-root", default=os.getenv("DATAFLOW_DATA_ROOT", "."))
+    cleanup.add_argument("--days", type=float, default=7)
+    cleanup.add_argument("--limit", type=int, default=200)
+    cleanup.add_argument(
+        "--apply", action="store_true", help="delete eligible failed outputs; default is dry-run"
+    )
     health = commands.add_parser("worker-health")
     health.add_argument("--work-root", default=os.getenv("DATAFLOW_WORK_ROOT", ".dataflow-worker"))
     health.add_argument("--ready", action="store_true")
@@ -112,8 +139,14 @@ def parser():
 def main():
     args = parser().parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    if getattr(args, "log_format", os.getenv("DATAFLOW_LOG_FORMAT", "json")) == "json":
+        from .observability import JSONFormatter
+
+        for handler in logging.getLogger().handlers:
+            handler.setFormatter(JSONFormatter())
     if args.command == "control":
         from .api import serve
+        from .security import token_list
 
         require_free_threading(args.allow_gil)
         serve(
@@ -132,6 +165,13 @@ def main():
             upload_concurrency=args.upload_concurrency,
             upload_timeout=args.upload_timeout,
             upload_dir=args.upload_dir,
+            viewer_tokens=token_list(os.getenv("DATAFLOW_VIEWER_TOKENS", "")),
+            admin_tokens=token_list(os.getenv("DATAFLOW_ADMIN_TOKENS", "")),
+            worker_tokens=token_list(os.getenv("DATAFLOW_WORKER_TOKENS", "")),
+            operator_modules=token_list(args.operator_modules),
+            upload_min_free_bytes=args.upload_min_free_bytes,
+            max_unfinished=args.max_unfinished,
+            db_timeout_ms=args.db_timeout_ms,
         )
     elif args.command == "worker":
         from .worker import Worker
@@ -184,14 +224,28 @@ def main():
 
         Store(args.dsn).migrate()
         print("schema version 1 ready")
+    elif args.command == "gc-failed-outputs":
+        from .maintenance import clean_failed_outputs
+        from .store import Store
+
+        print(
+            json.dumps(
+                clean_failed_outputs(
+                    Store(args.dsn), args.data_root, args.days, args.limit, args.apply
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
     elif args.command == "worker-health":
         health = json.loads((Path(args.work_root) / "health.json").read_text())
-        if time.time() - health["updated_at"] > 15:
+        if time.time() - health["updated_at"] > 15 or health.get("watchdog_age_seconds", 0) > 5:
             raise SystemExit(1)
         if args.ready and (
             not health["registered"]
             or health["draining"]
             or health.get("live_runners", 0) < health.get("runner_slots", 1)
+            or health.get("control_contact_age_seconds", 1e9) >= health.get("lease_seconds", 30)
         ):
             raise SystemExit(1)
     else:

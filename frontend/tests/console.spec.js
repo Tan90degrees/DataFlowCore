@@ -580,3 +580,55 @@ test("cancel a slow real upload and keep the task draft", async ({ page, request
   // throttling immediately after the click can flush queued bytes before abort.
   await session.detach();
 });
+
+test("read-only console disables mutations and explains queue placement", async ({page, request}) => {
+  const created = await request.post(base + "/v1/tasks", {headers: {...headers, "Idempotency-Key": "viewer-queue"},
+    data: {...spec("只读排队诊断", [{id: "read", callable: "dataflowcore.operators:read_text"}]), pool: "missing-pool"}});
+  expect(created.ok()).toBeTruthy();
+  const task = await created.json();
+  try {
+    await connect(page, "v".repeat(32));
+    await expect(page.getByRole("button", {name: /API 已连接（只读）/})).toBeVisible();
+    await page.evaluate(id => {location.hash = `task/${id}`;}, task.id);
+    await expect(page.locator("#queue-reason")).toContainText("执行池");
+    await expect(page.getByRole("button", {name: "停止任务", exact: true})).toBeDisabled();
+    await expect(page.locator("#task-stop-hint")).toContainText("只读连接");
+    await page.getByRole("link", {name: "DAG 编排", exact: true}).click();
+    await expect(page.getByRole("button", {name: "提交任务", exact: true})).toBeDisabled();
+    await page.getByRole("link", {name: "运维", exact: true}).click();
+    await expect(page.getByRole("button", {name: "暂停任务接入", exact: true})).toBeDisabled();
+    const forbidden = await request.post(base + `/v1/tasks/${task.id}/cancel`, {
+      headers: {Authorization: `Bearer ${"v".repeat(32)}`}, data: {},
+    });
+    expect(forbidden.status()).toBe(403);
+  } finally {
+    await request.post(base + `/v1/tasks/${task.id}/cancel`, {headers, data: {}});
+  }
+});
+
+test("operations pauses admission, reports quiescence and records management audit", async ({page, request}) => {
+  await connect(page);
+  await page.getByRole("link", {name: "运维", exact: true}).click();
+  await expect(page.getByRole("button", {name: "暂停任务接入", exact: true})).toBeEnabled();
+  try {
+    await page.getByRole("button", {name: "暂停任务接入", exact: true}).click();
+    await page.locator("#confirm-yes").click();
+    await expect(page.getByRole("button", {name: "恢复任务接入", exact: true})).toBeEnabled();
+    await expect(page.locator("#main")).toContainText("已暂停且执行与上传归零");
+    await expect(page.locator(".event").filter({hasText: "control.paused"})).toBeVisible();
+    const refused = await request.post(base + "/v1/tasks", {headers: {...headers, "Idempotency-Key": "paused-new"},
+      data: spec("暂停时不能提交", [{id: "read", callable: "dataflowcore.operators:read_text"}])});
+    expect(refused.status()).toBe(503);
+    expect(refused.headers()["retry-after"]).toBe("5");
+    await page.getByRole("link", {name: "DAG 编排", exact: true}).click();
+    await expect(page.getByRole("button", {name: "提交任务", exact: true})).toBeDisabled();
+    await expect(page.locator("#admission-status")).toContainText("维护暂停");
+    await page.getByRole("link", {name: "运维", exact: true}).click();
+    await page.screenshot({path: "test-results/production-operations.png", fullPage: true});
+    await page.getByRole("button", {name: "恢复任务接入", exact: true}).click();
+    await page.locator("#confirm-yes").click();
+    await expect(page.getByRole("button", {name: "暂停任务接入", exact: true})).toBeEnabled();
+  } finally {
+    await request.post(base + "/v1/control", {headers, data: {paused: false}});
+  }
+});

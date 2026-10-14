@@ -11,9 +11,10 @@ from .contracts import TERMINAL, Invalid, canonical, integer
 
 
 class APIError(Exception):
-    def __init__(self, status, message):
+    def __init__(self, status, message, *, request_id=None, code=None, retry_after=None):
         super().__init__(message)
         self.status = status
+        self.request_id, self.code, self.retry_after = request_id, code, retry_after
 
 
 class Client:
@@ -33,10 +34,18 @@ class Client:
                 return json.load(response)
         except urllib.error.HTTPError as exc:
             try:
-                message = json.load(exc).get("error", str(exc))
+                value = json.load(exc)
+                message = value.get("error", str(exc))
             except ValueError, AttributeError:
                 message = str(exc)
-            raise APIError(exc.code, message) from exc
+                value = {}
+            raise APIError(
+                exc.code,
+                message,
+                request_id=exc.headers.get("X-Request-ID"),
+                code=value.get("code"),
+                retry_after=exc.headers.get("Retry-After"),
+            ) from exc
 
     def submit(self, spec, key=None):
         return self.request("POST", "/v1/tasks", spec, key or str(uuid.uuid4()))
@@ -57,6 +66,8 @@ class Client:
 
     def iter_tasks(self, *, state=None, pool=None, page_size=100, summary=True):
         integer(page_size, "page_size", 1, 100)
+        if not summary:
+            page_size = min(page_size, 10)
         cursor = None
         while True:
             params = {"limit": page_size, "summary": int(summary)}

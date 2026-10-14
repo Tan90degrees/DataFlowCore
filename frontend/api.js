@@ -1,7 +1,9 @@
 export class APIError extends Error {
-  constructor(message, status = 0) {
+  constructor(message, status = 0, requestId = "", retryAfter = null) {
     super(message);
     this.status = status;
+    this.requestId = requestId;
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -60,6 +62,8 @@ export class API {
       throw new APIError(
         result.error || `HTTP ${response.status}`,
         response.status,
+        response.headers.get("X-Request-ID") || "",
+        response.headers.get("Retry-After"),
       );
     return result;
   }

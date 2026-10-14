@@ -133,6 +133,7 @@ def test_limits_framing_and_disabled_uploads(upload_api, tmp_path):
         "max_concurrent": 1,
         "timeout_seconds": 30,
         "upload_dir": str(tmp_path / "uploads"),
+        "min_free_bytes": 0,
     }
     for lengths, transfer, status in [
         ([], None, 411),

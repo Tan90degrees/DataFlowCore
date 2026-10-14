@@ -1,0 +1,99 @@
+{{- $budget := .Values.workerDisruptionBudget | default dict -}}
+{{- if $budget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Release.Name }}-worker
+spec:
+  minAvailable: {{ $budget.minAvailable }}
+  selector:
+    matchLabels: {app: "{{ .Release.Name }}-worker"}
+---
+{{- end }}
+{{- $network := .Values.networkPolicy | default dict -}}
+{{- if $network.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-control
+spec:
+  podSelector:
+    matchLabels: {app: "{{ .Release.Name }}-control"}
+  policyTypes: [Ingress]
+  ingress:
+    - ports: [{protocol: TCP, port: 8080}]
+      from:
+        - podSelector:
+            matchLabels: {app: "{{ .Release.Name }}-worker"}
+        - podSelector:
+            matchLabels: {app: "{{ .Release.Name }}-console"}
+        {{- with $network.controlIngressPeers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+---
+{{- end }}
+{{- $ingress := .Values.ingress | default dict -}}
+{{- if $ingress.enabled }}
+{{- if not .Values.console.enabled }}{{ fail "ingress requires console.enabled=true" }}{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-console
+spec:
+  {{- if $ingress.className }}
+  ingressClassName: {{ $ingress.className | quote }}
+  {{- end }}
+  {{- if $ingress.tlsSecret }}
+  tls:
+    - hosts: [{{ $ingress.host | quote }}]
+      secretName: {{ $ingress.tlsSecret | quote }}
+  {{- end }}
+  rules:
+    - host: {{ $ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-console
+                port: {number: 8080}
+---
+{{- end }}
+{{- $monitor := .Values.monitoring | default dict -}}
+{{- if $monitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app: {{ .Release.Name }}
+    {{- with $monitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels: {app: "{{ .Release.Name }}-control"}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 5s
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ .Values.existingSecret }}
+          key: {{ $monitor.bearerSecretKey }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app: {{ .Release.Name }}
+    {{- with $monitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- .Files.Get "alerts.yaml" | nindent 2 }}
+{{- end }}

@@ -1,16 +1,21 @@
 """Authenticated HTTP control plane. Worker requests never execute business code."""
 
 import hashlib
-import hmac
 import json
 import logging
+import re
 import threading
+import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 from . import __version__
-from .contracts import Conflict, Invalid, Missing, TaskSpec, integer
+from .contracts import APIBusy, Backpressure, Conflict, Invalid, Missing, Paused, TaskSpec, integer
+from .control_lock import ControlLock, ControlLost
+from .observability import HTTPMetrics
 from .runtime import under_root
+from .security import Credentials, request_actor
 from .store import Store
 from .uploads import DEFAULT_DIR, DEFAULT_MAX_BYTES, UploadError, Uploads
 
@@ -35,13 +40,33 @@ class Server(ThreadingHTTPServer):
         upload_concurrency=4,
         upload_timeout=300,
         upload_dir=DEFAULT_DIR,
+        viewer_tokens=(),
+        admin_tokens=(),
+        worker_tokens=(),
+        operator_modules=(),
+        upload_min_free_bytes=0,
+        ownership=None,
+        management_concurrency=8,
     ):
-        if not insecure and (
-            len(admin_token) < 24 or len(worker_token) < 24 or admin_token == worker_token
-        ):
-            raise Invalid("configure distinct admin/worker tokens of at least 24 characters")
+        self.credentials = Credentials(
+            ((admin_token,) if admin_token else ()) + tuple(admin_tokens),
+            ((worker_token,) if worker_token else ()) + tuple(worker_tokens),
+            viewer_tokens,
+            insecure,
+        )
         self.store, self.data_root = store, data_root
         self.admin_token, self.worker_token, self.insecure = admin_token, worker_token, insecure
+        self.ownership = ownership
+        self.ownership_healthy = True
+        self.last_reconciliation = time.time()
+        self.metrics = HTTPMetrics()
+        integer(management_concurrency, "management concurrency", 1, 32)
+        self.management_slots = threading.BoundedSemaphore(management_concurrency)
+        self.operator_modules = tuple(operator_modules)
+        if any(
+            not re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", m) for m in self.operator_modules
+        ):
+            raise Invalid("operator modules must be Python module prefixes")
         self.reap_interval = reap_interval
         self.cors_origins = frozenset(cors_origins)
         for origin in self.cors_origins:
@@ -67,10 +92,42 @@ class Server(ThreadingHTTPServer):
                 upload_concurrency,
                 upload_timeout,
                 upload_dir=upload_dir,
+                min_free_bytes=upload_min_free_bytes,
+                admission=self.upload_admission,
             )
         except BaseException:
             self.server_close()
             raise
+
+    def upload_admission(self):
+        if not self.ownership_healthy or self.stopped.is_set():
+            raise Paused("controller is not accepting writes")
+        if self.store.control()["paused"]:
+            raise Paused("file uploads are paused for maintenance")
+
+    def operational_state(self):
+        result = self.store.control()
+        with self.uploads.lock:
+            result["active_uploads"] = len(self.uploads.active)
+        result["quiescent"] = (
+            result["paused"] and result["active_attempts"] == 0 and result["active_uploads"] == 0
+        )
+        result["operator_modules"] = self.operator_modules
+        result["reconciliation_last_success_at"] = self.last_reconciliation
+        return result
+
+    def validate(self, data):
+        spec = TaskSpec.parse(data)
+        if self.operator_modules and any(
+            not any(
+                s["callable"].partition(":")[0] == prefix
+                or s["callable"].partition(":")[0].startswith(prefix + ".")
+                for prefix in self.operator_modules
+            )
+            for s in spec.steps
+        ):
+            raise UploadError(403, "operator module is not allowed by this controller")
+        return spec
 
     def process_request(self, request, client_address):
         if not self.slots.acquire(blocking=False):
@@ -100,10 +157,20 @@ class Server(ThreadingHTTPServer):
     def reconcile(self):
         while not self.stopped.wait(self.reap_interval):
             try:
+                if self.ownership is not None:
+                    self.ownership.check()
                 count = self.store.reap()
+                self.last_reconciliation = time.time()
+                self.ownership_healthy = True
                 if count:
                     log.info("recovered_expired_attempts count=%s", count)
+            except ControlLost:
+                self.ownership_healthy = False
+                log.exception("controller_ownership_lost")
+                threading.Thread(target=self.shutdown, daemon=True).start()
+                return
             except Exception:
+                self.ownership_healthy = False
                 log.exception("reconciliation_failed")
 
 
@@ -114,14 +181,37 @@ class Handler(BaseHTTPRequestHandler):
         super().setup()
         self.connection.settimeout(10)
 
+    def handle_one_request(self):
+        self.request_id = uuid.uuid4().hex
+        self.response_code = 0
+        started = time.monotonic()
+        try:
+            super().handle_one_request()
+        finally:
+            if self.response_code:
+                self.server.metrics.observe(
+                    getattr(self, "command", "OTHER"),
+                    urlsplit(getattr(self, "path", "")).path,
+                    self.response_code,
+                    time.monotonic() - started,
+                )
+
+    def send_response(self, code, message=None):
+        self.response_code = code
+        super().send_response(code, message)
+        self.send_header("X-Request-ID", self.request_id)
+
     def log_message(self, fmt, *args):
-        log.info("http peer=%s %s", self.client_address[0], fmt % args)
+        log.info(
+            "http request_id=%s peer=%s %s", self.request_id, self.client_address[0], fmt % args
+        )
 
     def end_headers(self):
         origin = self.headers.get("Origin")
         self.send_header("Vary", "Origin")
         if origin in self.server.cors_origins:
             self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Expose-Headers", "X-Request-ID, Retry-After")
         super().end_headers()
 
     def send_json(self, status, value):
@@ -134,6 +224,14 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def body(self):
+        lengths = self.headers.get_all("Content-Length", [])
+        if (
+            len(lengths) != 1
+            or not lengths[0].isascii()
+            or not lengths[0].isdigit()
+            or self.headers.get("Transfer-Encoding")
+        ):
+            raise Invalid("JSON requires one valid Content-Length, without Transfer-Encoding")
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError as exc:
@@ -141,7 +239,10 @@ class Handler(BaseHTTPRequestHandler):
         if not 0 < length <= 1_100_000:
             raise Invalid("body must be a JSON object of at most 1.1 MB")
         try:
-            value = json.loads(self.rfile.read(length))
+            raw = self.rfile.read(length)
+            if len(raw) != length:
+                raise Invalid("incomplete JSON body")
+            value = json.loads(raw)
         except (ValueError, UnicodeError) as exc:
             raise Invalid("invalid JSON") from exc
         if not isinstance(value, dict):
@@ -150,7 +251,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def dispatch(self, method):
         path = urlsplit(self.path).path
+        actor_context = None
+        management_acquired = False
         try:
+            supplied_id = self.headers.get("X-Request-ID", "")
+            if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", supplied_id):
+                self.request_id = supplied_id
             origin = self.headers.get("Origin")
             if origin and origin not in self.server.cors_origins:
                 self.send_json(403, {"error": "browser origin is not allowed"})
@@ -158,27 +264,49 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and path in ("/healthz", "/version"):
                 self.send_json(200, {"ok": True, "version": __version__})
                 return
-            role = "worker" if path.startswith("/v1/worker/") else "admin"
-            expected = self.server.worker_token if role == "worker" else self.server.admin_token
-            if (
-                path != "/readyz"
-                and not self.server.insecure
-                and not hmac.compare_digest(
-                    self.headers.get("Authorization", ""), f"Bearer {expected}"
-                )
-            ):
-                self.send_json(401, {"error": "authentication required"})
-                return
             if method == "GET" and path == "/readyz":
-                self.server.store.stats()
+                if (
+                    not self.server.ownership_healthy
+                    or self.server.stopped.is_set()
+                    or time.time() - self.server.last_reconciliation
+                    > max(5, self.server.reap_interval * 3)
+                ):
+                    raise Paused("controller reconciliation is not healthy")
+                self.server.store.ping()
                 self.send_json(200, {"ready": True})
                 return
+            actor = self.server.credentials.authenticate(
+                self.headers.get("Authorization", ""), path.startswith("/v1/worker/")
+            )
+            if actor is None:
+                self.send_json(401, {"error": "authentication required"})
+                return
+            self.role = actor["role"]
+            actor_context = request_actor.set({**actor, "request_id": self.request_id})
+            if self.role != "worker":
+                management_acquired = self.server.management_slots.acquire(blocking=False)
+                if not management_acquired:
+                    raise APIBusy("management requests are busy; retry later")
+            if (
+                self.role == "viewer"
+                and method == "POST"
+                and path not in ("/v1/tasks/status", "/v1/dags/validate")
+            ):
+                self.send_json(
+                    403, {"error": "read-only credential cannot change state", "code": "read_only"}
+                )
+                return
+            if method == "POST" and (
+                not self.server.ownership_healthy or self.server.stopped.is_set()
+            ):
+                raise Paused("controller is not accepting writes")
             if method == "GET" and path == "/metrics":
-                counts = self.server.store.stats()
+                telemetry = self.server.store.telemetry()
                 data = (
-                    "# TYPE dataflow_tasks gauge\n"
+                    self.server.metrics.render()
+                    + "# TYPE dataflow_tasks gauge\n"
                     + "".join(
-                        f'dataflow_tasks{{state="{state}"}} {counts.get(state, 0)}\n'
+                        f'dataflow_tasks{{state="{state}"}} {telemetry["tasks"].get(state, 0)}\n'
                         for state in (
                             "QUEUED",
                             "RUNNING",
@@ -188,6 +316,31 @@ class Handler(BaseHTTPRequestHandler):
                             "CANCELLED",
                         )
                     )
+                    + "# TYPE dataflow_attempts gauge\n"
+                    + "".join(
+                        f'dataflow_attempts{{state="{state}"}} '
+                        f"{telemetry['attempts'].get(state, 0)}\n"
+                        for state in (
+                            "RUNNING",
+                            "STOPPING",
+                            "SUCCEEDED",
+                            "FAILED",
+                            "CANCELLED",
+                            "LOST",
+                        )
+                    )
+                    + "".join(
+                        f"# TYPE dataflow_{key} gauge\ndataflow_{key} {telemetry[key]}\n"
+                        for key in (
+                            "oldest_queue_seconds",
+                            "online_workers",
+                            "worker_slots",
+                            "paused",
+                        )
+                    )
+                    + "# TYPE dataflow_reconciliation_last_success_timestamp_seconds gauge\n"
+                    + "dataflow_reconciliation_last_success_timestamp_seconds "
+                    + f"{self.server.last_reconciliation}\n"
                 ).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain; version=0.0.4")
@@ -222,6 +375,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             result = self.route(method, path, self.body() if method == "POST" else {})
             self.send_json(200, result)
+        except Backpressure as exc:
+            self.send_response(exc.status)
+            self.send_header("Retry-After", "5")
+            data = json.dumps({"error": str(exc), "code": exc.code}).encode()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
         except UploadError as exc:
             self.send_json(exc.status, {"error": str(exc)})
         except Missing as exc:
@@ -231,20 +393,38 @@ class Handler(BaseHTTPRequestHandler):
         except (Invalid, KeyError, TypeError, ValueError) as exc:
             self.send_json(400, {"error": str(exc)})
         except Exception:
-            log.exception("request_failed path=%s", path)
+            log.exception("request_failed path=%s request_id=%s", path, self.request_id)
             self.send_json(503, {"error": "service temporarily unavailable"})
+        finally:
+            if management_acquired:
+                self.server.management_slots.release()
+            if actor_context is not None:
+                request_actor.reset(actor_context)
 
     def route(self, method, path, data):
         store = self.server.store
         parts = path.strip("/").split("/")
         if method == "GET" and path == "/v1/overview":
-            return {"task_counts": store.stats(), "version": __version__}
+            return {**store.overview(), "version": __version__, "role": self.role}
+        if method == "GET" and path == "/v1/control":
+            return self.server.operational_state()
+        if method == "POST" and path == "/v1/control":
+            # Same lock as upload admission: pause cannot report quiescence while
+            # an already accepted upload has not yet registered its reservation.
+            with self.server.uploads.lock:
+                store.set_paused(data.get("paused"))
+            return self.server.operational_state()
+        if method == "GET" and path == "/v1/audit":
+            query = parse_qs(urlsplit(self.path).query)
+            return store.audit_page(
+                int(query.get("limit", ["100"])[0]), query.get("cursor", [None])[0]
+            )
         if method == "GET" and path == "/v1/files/limits":
             return self.server.uploads.limits()
         if method == "GET" and path == "/v1/files":
             return self.server.uploads.get(self.request_key())
         if method == "POST" and path == "/v1/dags/validate":
-            spec = TaskSpec.parse(data)
+            spec = self.server.validate(data)
             resolved, layers = set(), []
             while len(resolved) < len(spec.steps):
                 layer = [
@@ -256,7 +436,7 @@ class Handler(BaseHTTPRequestHandler):
                 resolved.update(layer)
             return {"valid": True, "spec": spec.json(), "layers": layers}
         if method == "POST" and path == "/v1/tasks":
-            spec = TaskSpec.parse(data)
+            spec = self.server.validate(data)
             source = under_root(spec.input_path, self.server.data_root)
             if not source.is_file():
                 raise Invalid("input must be an existing shared file")
@@ -269,12 +449,16 @@ class Handler(BaseHTTPRequestHandler):
             return store.submit(TaskSpec.parse(normalized), self.request_key())
         if method == "GET" and path == "/v1/tasks":
             query = parse_qs(urlsplit(self.path).query)
+            summary = query.get("summary", ["1"])[0] == "1"
+            limit = int(query.get("limit", ["100" if summary else "10"])[0])
+            if not summary and limit > 10:
+                raise Invalid("full task definitions are limited to 10; use summary=1 for paging")
             return store.task_page(
-                limit=int(query.get("limit", ["100"])[0]),
+                limit=limit,
                 cursor=query.get("cursor", [None])[0],
                 state=query.get("state", [None])[0],
                 pool=query.get("pool", [None])[0],
-                summary=query.get("summary", ["0"])[0] == "1",
+                summary=summary,
             )
         if method == "POST" and path == "/v1/tasks/status":
             return store.statuses(data.get("task_ids"))
@@ -286,12 +470,15 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) >= 3 and parts[:2] == ["v1", "tasks"]:
             tid = parts[2]
             if method == "GET" and len(parts) == 3:
-                return store.get(tid)
+                query = parse_qs(urlsplit(self.path).query)
+                return store.get(tid, compact=True, attempt_id=query.get("attempt", [None])[0])
             if method == "GET" and parts[3:] == ["events"]:
                 return {"events": store.events(tid)}
             if method == "POST" and parts[3:] == ["cancel"]:
                 return store.cancel(tid)
             if method == "POST" and parts[3:] == ["retry"]:
+                old = store.get(tid, compact=True)
+                self.server.validate({"scheduling": old["scheduling"], **old["spec"]})
                 return store.retry(tid, self.request_key())
         if method == "POST" and path == "/v1/worker/register":
             for key in ("session_id", "name", "pool", "runtime_version"):
@@ -335,7 +522,7 @@ class Handler(BaseHTTPRequestHandler):
         if (
             origin not in self.server.cors_origins
             or self.headers.get("Access-Control-Request-Method") not in ("GET", "POST")
-            or not requested <= {"authorization", "content-type", "idempotency-key"}
+            or not requested <= {"authorization", "content-type", "idempotency-key", "x-request-id"}
             or not path.startswith("/v1/")
             or path.startswith("/v1/worker/")
         ):
@@ -344,7 +531,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Methods", "GET, POST")
         self.send_header(
-            "Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key"
+            "Access-Control-Allow-Headers",
+            "Authorization, Content-Type, Idempotency-Key, X-Request-ID",
         )
         self.send_header("Access-Control-Max-Age", "600")
         self.send_header("Content-Length", "0")
@@ -365,22 +553,40 @@ def serve(
     upload_concurrency=4,
     upload_timeout=300,
     upload_dir=DEFAULT_DIR,
+    viewer_tokens=(),
+    admin_tokens=(),
+    worker_tokens=(),
+    operator_modules=(),
+    upload_min_free_bytes=0,
+    max_unfinished=10000,
+    db_timeout_ms=5000,
 ):
-    store = Store(dsn, lease)
-    store.migrate()
-    server = Server(
-        (host, port),
-        store,
-        data_root,
-        admin_token,
-        worker_token,
-        insecure,
-        cors_origins=cors_origins,
-        upload_max_bytes=upload_max_bytes,
-        upload_concurrency=upload_concurrency,
-        upload_timeout=upload_timeout,
-        upload_dir=upload_dir,
-    )
+    store = Store(dsn, lease, max_unfinished, db_timeout_ms)
+    ownership = ControlLock(store)
+    try:
+        store.migrate()
+        server = Server(
+            (host, port),
+            store,
+            data_root,
+            admin_token,
+            worker_token,
+            insecure,
+            cors_origins=cors_origins,
+            upload_max_bytes=upload_max_bytes,
+            upload_concurrency=upload_concurrency,
+            upload_timeout=upload_timeout,
+            upload_dir=upload_dir,
+            viewer_tokens=viewer_tokens,
+            admin_tokens=admin_tokens,
+            worker_tokens=worker_tokens,
+            operator_modules=operator_modules,
+            upload_min_free_bytes=upload_min_free_bytes,
+            ownership=ownership,
+        )
+    except BaseException:
+        ownership.close()
+        raise
     import signal
 
     def stop(*_):
@@ -392,3 +598,4 @@ def serve(
         server.serve_forever()
     finally:
         server.server_close()
+        ownership.close()
