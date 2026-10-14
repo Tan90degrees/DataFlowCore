@@ -88,7 +88,10 @@ class Cluster:
 
     def submit(self, seconds=0, steps=None, **changes):
         source = self.root / "input.txt"
-        source.write_text("hello world hello")
+        # Submitted inputs are immutable. Fast event-driven execution may already
+        # hash this file while a subsequent task is being submitted.
+        if not source.exists():
+            source.write_text("hello world hello")
         spec = {
             "input_path": str(source),
             "retry_delay": 0,
@@ -193,13 +196,8 @@ def test_two_executors_run_separate_files_concurrently(cluster):
     cluster.state(second["id"], "SUCCEEDED")
 
 
-def test_auth_roles_and_input_path_validation(cluster):
-    with pytest.raises(APIError) as error:
-        Client(cluster.client.url).request("GET", "/v1/tasks")
-    assert error.value.status == 401
-    with pytest.raises(APIError) as error:
-        Client(cluster.client.url, "w" * 32).request("GET", "/v1/tasks")
-    assert error.value.status == 401
+def test_internal_api_needs_no_credentials_and_checks_input_paths(cluster):
+    assert Client(cluster.client.url).request("GET", "/v1/tasks")
     with pytest.raises(APIError) as error:
         cluster.submit(input_path="/etc/passwd")
     assert error.value.status == 400
@@ -265,7 +263,9 @@ def test_supervisor_kill_terminates_task_child(cluster):
     if sys.platform != "linux":
         pytest.skip("Linux parent-death signal")
 
-    pid = json.loads((workspace / "runner.json").read_text())["pid"]
+    from dataflowcore.worker import Worker
+
+    pid = until(lambda: Worker.read_json(workspace / "runner.json"))["pid"]
     worker.send_signal(signal.SIGKILL)
     worker.wait(timeout=3)
 

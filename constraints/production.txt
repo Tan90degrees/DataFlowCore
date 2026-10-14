@@ -1,3 +1,5 @@
 # Runtime Python packages for the shipped 3.14t image. Business dependencies must
 # be locked by the business image as part of its own unified environment.
 psycopg==3.3.6
+psycopg_pool==3.3.3
+typing_extensions==4.16.0

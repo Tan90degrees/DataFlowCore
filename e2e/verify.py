@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import os
 import sqlite3
 import subprocess
 import time
@@ -13,7 +12,7 @@ from urllib.parse import urlencode
 from dataflowcore.client import APIError, Client
 from dataflowcore.examples.ingestion import fixture_vector, pipeline, records
 
-client = Client("http://127.0.0.1:18080", os.environ["DATAFLOW_ADMIN_TOKEN"], timeout=3)
+client = Client("http://127.0.0.1:18080", "", timeout=3)
 
 
 def kubectl(*args):
@@ -85,7 +84,7 @@ upload_request = urllib.request.Request(
     client.url + "/v1/files?" + urlencode({"filename": "业务输入.txt"}),
     (Path(".e2e/data") / "input.txt").read_bytes(),
     {
-        "Authorization": "Bearer " + os.environ["DATAFLOW_ADMIN_TOKEN"],
+        "Authorization": "Bearer " + "",
         "Content-Type": "application/octet-stream",
         "Idempotency-Key": upload_key,
     },
@@ -133,7 +132,7 @@ forward = subprocess.Popen(
     stderr=subprocess.DEVNULL,
 )
 try:
-    client = Client("http://127.0.0.1:18081", os.environ["DATAFLOW_ADMIN_TOKEN"], timeout=3)
+    client = Client("http://127.0.0.1:18081", "", timeout=3)
     until(lambda: client.request("GET", "/readyz"))
     assert client.request("GET", "/v1/files", key=upload_key) == uploaded
     finished = state(task["id"], "SUCCEEDED")

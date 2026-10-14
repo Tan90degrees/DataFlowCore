@@ -5,7 +5,6 @@ control:
   maxUnfinished: 10000
   dbTimeoutMS: 5000
   uploadMinFreeBytes: 1073741824
-  operatorModules: [dataflowcore.operators, dataflowcore.examples.ingestion]
 worker:
   replicas: 2
 workerDisruptionBudget:

@@ -21,7 +21,7 @@ dataflow control --data-root /absolute/shared/data \
   --upload-max-bytes 1073741824 --upload-timeout 900
 ```
 
-服务仍需要独立的管理/执行器令牌与原有数据库配置。Docker Compose 已把管控数据卷改为可写，可在 `.env` 配置以上环境变量，然后执行 `docker compose up --build -d`。宿主机共享目录需给容器 UID/GID 10001 写权限。
+服务使用原有数据库配置，无需管理/执行器令牌。Docker Compose 已把管控数据卷改为可写，可在 `.env` 配置以上环境变量，然后执行 `docker compose up --build -d`。宿主机共享目录需给容器 UID/GID 10001 写权限。
 
 上传目录由管控启动配置统一指定，CLI 优先于环境变量。相对路径相对于 `--data-root`，上述示例实际保存到 `/absolute/shared/data/incoming/documents/<id>/source/<文件名>`；也可直接填写绝对路径 `--upload-dir /absolute/shared/data/incoming/documents`。目录不存在时自动创建。空目录配置、越界路径和指向 data-root 外的符号链接会拒绝启动。执行器无需新增配置，前端会自动回填该目录下的实际输入路径；`GET /v1/files/limits` 的 `upload_dir` 可查询当前解析后的目录。
 
@@ -35,9 +35,9 @@ Kubernetes 已在启用上传时将管控 PVC 挂载为可写；设置 `control.
 
 ## API
 
-- `GET /v1/files/limits`：管理鉴权，返回 `enabled`、`max_bytes`、`max_concurrent`、`timeout_seconds`、解析后的绝对 `upload_dir`。
-- `POST /v1/files?filename=document.pdf`：管理鉴权，原始文件字节，`Content-Type: application/octet-stream`，必须有 `Content-Length` 和 `Idempotency-Key`。浏览器自动设置长度。文件名为不含路径分隔符或控制字符的 basename，最多 255 个 UTF-8 字节，保留原名和扩展名。
-- `GET /v1/files`：管理鉴权，携带原 `Idempotency-Key`，查询已完成的上传；尚未完成返回 404。可用于上传响应丢失后的确认，不是文件列表接口。
+- `GET /v1/files/limits`：返回 `enabled`、`max_bytes`、`max_concurrent`、`timeout_seconds`、解析后的绝对 `upload_dir`。
+- `POST /v1/files?filename=document.pdf`：原始文件字节，`Content-Type: application/octet-stream`，必须有 `Content-Length` 和 `Idempotency-Key`。浏览器自动设置长度。文件名为不含路径分隔符或控制字符的 basename，最多 255 个 UTF-8 字节，保留原名和扩展名。
+- `GET /v1/files`：携带原 `Idempotency-Key`，查询已完成的上传；尚未完成返回 404。可用于上传响应丢失后的确认，不是文件列表接口。
 
 ```bash
 curl -sS -X POST "http://127.0.0.1:8080/v1/files?filename=document.pdf" \
@@ -49,7 +49,7 @@ curl -sS -X POST "http://127.0.0.1:8080/v1/files?filename=document.pdf" \
 
 新文件返回 201，相同键、文件名、大小与字节的重传返回 200，并复用原文件。返回 `{id, filename, size_bytes, input_path, input_sha256, created_at}`。将 `input_path` 和 `input_sha256` 放入原 `POST /v1/tasks` 的 TaskSpec；上传不自动创建任务。每个新文件使用新键，重试原文件沿用原键。
 
-错误：401 管理鉴权失败，403 来源未允许或上传关闭，409 同键上传仍在进行或键用于不同文件，411 缺少长度，413 超过大小限制，415 错误内容类型，429 上传槽位繁忙，408 接收超时，507 存储已满，503 存储/连接暂时不可用。
+错误：403 来源未允许或上传关闭，409 同键上传仍在进行或键用于不同文件，411 缺少长度，413 超过大小限制，415 错误内容类型，429 上传槽位繁忙，408 接收超时，507 存储已满，503 存储/连接暂时不可用。
 
 ## 可靠性与性能
 
@@ -74,4 +74,4 @@ npm run test:dev
 DATAFLOW_TEST_PYTHON=python npm test
 ```
 
-验证包括超过 JSON 预算的二进制文件、中文文件名、上传目录的相对/绝对路径与 CLI/环境变量优先级、越界路径拒绝、管理鉴权、长度/大小限制、并发准入、断开/超时/磁盘满清理、幂等确认、管控重启、真实 free-threaded 执行器的文件 DAG，以及浏览器在指定目录上传后回填、保留未提交编辑和丢失响应确认。K8S 验收通过 Helm 指定上传目录，使用上传文件完成 Pod 故障恢复与管控重启，并通过生产 Nginx 上传超过 2 MiB 的文件并执行真实 DAG。
+验证包括超过 JSON 预算的二进制文件、中文文件名、上传目录的相对/绝对路径与 CLI/环境变量优先级、越界路径拒绝、无凭证内部接入、长度/大小限制、并发准入、断开/超时/磁盘满清理、幂等确认、管控重启、真实 free-threaded 执行器的文件 DAG，以及浏览器在指定目录上传后回填、保留未提交编辑和丢失响应确认。K8S 验收通过 Helm 指定上传目录，使用上传文件完成 Pod 故障恢复与管控重启，并通过生产 Nginx 上传超过 2 MiB 的文件并执行真实 DAG。

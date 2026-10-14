@@ -52,6 +52,7 @@ def verify(dsn, container):
             ["docker", "exec", container, *args], check=True, timeout=60, stdout=subprocess.DEVNULL
         )
 
+    original = restored = None
     try:
         connection.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
         with tempfile.TemporaryDirectory(prefix="dataflow-restore-") as folder:
@@ -95,6 +96,10 @@ def verify(dsn, container):
                 "shared_files_restored": True,
             }
     finally:
+        if restored is not None:
+            restored.close()
+        if original is not None:
+            original.close()
         try:
             pg("rm", "-f", dump)
             if target_created:

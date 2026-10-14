@@ -1,6 +1,5 @@
 """Production controls exercised through real transactions, HTTP and filesystem IO."""
 
-import hashlib
 import io
 import json
 import threading
@@ -16,7 +15,6 @@ from dataflowcore.api import Server
 from dataflowcore.contracts import Backpressure, Conflict, Paused, TaskSpec
 from dataflowcore.control_lock import ControlLock
 from dataflowcore.maintenance import clean_failed_outputs
-from dataflowcore.security import Credentials
 from dataflowcore.store import Store
 from dataflowcore.uploads import UploadError, Uploads
 from tests.conftest import complete, register
@@ -31,10 +29,6 @@ def production_api(store, tmp_path):
         tmp_path,
         "a" * 32,
         "w" * 32,
-        viewer_tokens=("v" * 32,),
-        admin_tokens=("b" * 32,),
-        worker_tokens=("x" * 32,),
-        operator_modules=("dataflowcore.operators",),
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -86,7 +80,11 @@ def test_pause_survives_restart_keeps_claim_replay_and_allows_completion(store, 
     assignment = store.claim("worker", "delivered")
     store.submit(spec, "queued")
     store.set_paused(True)
-    assert Store(store.dsn).control()["paused"]
+    restarted = Store(store.dsn)
+    try:
+        assert restarted.control()["paused"]
+    finally:
+        restarted.close()
     assert store.submit(spec, "first")["id"] == first["id"]
     with pytest.raises(Paused):
         store.submit(spec, "new")
@@ -138,44 +136,13 @@ def test_queue_diagnostics_identify_the_actual_blocker(store, spec, reason):
     assert store.get(task["id"])["queue_diagnostic"]["code"] == reason
 
 
-def test_viewer_is_read_only_including_batched_status_and_worker_boundaries(
-    production_api, store, spec
-):
-    task = store.submit(spec, "viewer")
-    viewer = "v" * 32
-    assert http(production_api, "/v1/overview", token=viewer)[2]["role"] == "viewer"
-    assert (
-        http(production_api, "/v1/tasks/status", "POST", {"task_ids": [task["id"]]}, token=viewer)[
-            0
-        ]
-        == 200
-    )
-    for path, data in [("/v1/control", {"paused": True}), (f"/v1/tasks/{task['id']}/cancel", {})]:
-        assert http(production_api, path, "POST", data, token=viewer)[0] == 403
-    assert (
-        http(production_api, "/v1/worker/heartbeat", "POST", {"session_id": "any"}, token=viewer)[0]
-        == 401
-    )
-    assert store.get(task["id"])["state"] == "QUEUED"
-
-
-def test_overlapping_rotation_revocation_and_secret_free_transactional_audit(
-    production_api, store, spec
-):
-    assert http(production_api, "/v1/overview", token="a" * 32)[0] == 200
-    assert http(production_api, "/v1/overview", token="b" * 32)[0] == 200
-    task = store.submit(spec, "audit")
-    assert (
-        http(production_api, f"/v1/tasks/{task['id']}/cancel", "POST", {}, token="b" * 32)[0] == 200
-    )
-    event = store.audit_page()["events"][0]
-    assert event["principal"] == hashlib.sha256(("b" * 32).encode()).hexdigest()[:16]
-    assert event["request_id"] == "test-request"
-    assert event["action"] == "task.cancelled"
-    assert "b" * 32 not in json.dumps(event)
-    production_api.credentials = Credentials(("b" * 32,), ("x" * 32,), ("v" * 32,))
-    assert http(production_api, "/v1/overview", token="a" * 32)[0] == 401
-    assert http(production_api, "/v1/overview", token="b" * 32)[0] == 200
+def test_internal_api_has_no_identity_or_audit_dependencies(production_api, store, spec):
+    task = store.submit(spec, "internal")
+    assert http(production_api, "/v1/overview", token="")[0] == 200
+    assert "role" not in http(production_api, "/v1/overview")[2]
+    assert http(production_api, f"/v1/tasks/{task['id']}/cancel", "POST", {}, token="")[0] == 200
+    assert http(production_api, "/v1/audit")[0] == 404
+    assert store.get(task["id"])["state"] == "CANCELLED"
 
 
 def test_maintenance_and_backpressure_http_codes_are_actionable(production_api, store, spec):
@@ -198,11 +165,11 @@ def test_unhealthy_reconciliation_fails_readiness_without_failing_liveness(produ
     assert http(production_api, "/healthz")[0] == 200
 
 
-def test_module_policy_validates_without_importing_and_metrics_have_bounded_labels(
+def test_trusted_operators_validate_without_importing_and_metrics_have_bounded_labels(
     production_api, spec, store
 ):
     blocked = spec.json() | {"steps": [{"id": "run", "callable": "os:system"}]}
-    assert http(production_api, "/v1/dags/validate", "POST", blocked)[0] == 403
+    assert http(production_api, "/v1/dags/validate", "POST", blocked)[0] == 200
     task = store.submit(spec, "metrics")
     http(production_api, "/v1/tasks/" + task["id"])
     status, _, metrics = http(production_api, "/metrics", token="v" * 32, raw=True)
@@ -271,21 +238,6 @@ def test_compact_history_does_not_load_every_attempt_payload(production_api, sto
     assert selected["attempts"][0]["detail_loaded"] == 1
     assert len(selected["attempts"][0]["progress"]["message"]) == 100000
     assert http(production_api, f"/v1/tasks/{task['id']}?attempt=unknown")[0] == 404
-
-
-def test_audit_pagination_and_state_changes_share_a_transaction(store, spec):
-    original = store.audit
-    store.audit = lambda *args: (_ for _ in ()).throw(RuntimeError("audit failed"))
-    with pytest.raises(RuntimeError, match="audit failed"):
-        store.submit(spec, "must-rollback")
-    assert not store.stats()
-    store.audit = original
-    for index in range(4):
-        store.submit(spec, str(index))
-    page = store.audit_page(2)
-    next_page = store.audit_page(2, page["next_cursor"])
-    assert len(page["events"]) == len(next_page["events"]) == 2
-    assert not {e["id"] for e in page["events"]} & {e["id"] for e in next_page["events"]}
 
 
 def test_upload_headroom_reservation_does_not_leak_on_rejection(tmp_path, monkeypatch):

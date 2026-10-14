@@ -1,8 +1,7 @@
-"""Verify the independently deployed frontend and its authenticated API proxy."""
+"""Verify the independently deployed frontend and its internal API proxy."""
 
 import hashlib
 import json
-import os
 import time
 import urllib.error
 import urllib.request
@@ -21,23 +20,17 @@ for _ in range(60):
         time.sleep(0.5)
 else:
     raise AssertionError("console deployment not ready")
-client = Client(url + "/api", os.environ["DATAFLOW_ADMIN_TOKEN"])
+client = Client(url + "/api")
 overview = client.request("GET", "/v1/overview")
 assert sum(overview["task_counts"].values()) > 0
-# The frontend proxy must not remove API authentication.
-try:
-    urllib.request.urlopen(url + "/api/v1/overview", timeout=3)
-except urllib.error.HTTPError as error:
-    assert error.code == 401
-else:
-    raise AssertionError("console API proxy bypassed authentication")
+# Internal API and its proxy require no credentials.
+assert Client(url + "/api").request("GET", "/v1/overview")["task_counts"]
 payload = "前端上传 DataFlow hello world\n".encode() + b" " * (2 * 1024 * 1024)
 upload_key = "k8s-console-upload"
 upload_request = urllib.request.Request(
     url + "/api/v1/files?" + urlencode({"filename": "前端上传.txt"}),
     payload,
     {
-        "Authorization": "Bearer " + os.environ["DATAFLOW_ADMIN_TOKEN"],
         "Content-Type": "application/octet-stream",
         "Idempotency-Key": upload_key,
     },
@@ -75,10 +68,10 @@ result = json.loads(evidence.read_text())
 result["console"] = {
     "page": "ok",
     "proxy": "ok",
-    "unauthorized": 401,
+    "credential_free": True,
     "overview": overview,
     "upload": uploaded,
     "uploaded_task": result_task,
 }
 evidence.write_text(json.dumps(result, indent=2))
-print("Kubernetes console page + authenticated API proxy + 2 MiB upload execution: passed")
+print("Kubernetes console page + internal API proxy + 2 MiB upload execution: passed")

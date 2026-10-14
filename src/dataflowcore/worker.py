@@ -1,8 +1,10 @@
 """Executor supervisor with conservative local lease expiry and bounded capacity."""
 
+import hashlib
 import json
 import logging
 import os
+import select
 import shutil
 import signal
 import socket
@@ -17,6 +19,7 @@ from pathlib import Path
 from . import __version__
 from .client import APIError, Client
 from .contracts import canonical
+from .observability import FailureLog
 from .resources import ResourceBudget
 from .runtime import atomic_json, require_free_threading
 
@@ -85,6 +88,12 @@ class Slot:
     busy: bool = False
     logs: object = None
     started_at: float = field(default_factory=time.monotonic)
+    job_fd: int | None = None
+
+    def close_pipe(self):
+        if self.job_fd is not None:
+            os.close(self.job_fd)
+            self.job_fd = None
 
 
 @dataclass
@@ -148,6 +157,14 @@ class Worker:
         self.stopped = threading.Event()
         self.registered = False
         self.claim_id = str(uuid.uuid4())
+        self.pending_claims = []
+        self.safety_wakeup = threading.Event()
+        self.telemetry = {}
+        self.progress_sent = {}
+        self.failures = FailureLog()
+        self.completion_read, self.completion_write = os.pipe()
+        os.set_blocking(self.completion_read, False)
+        os.set_blocking(self.completion_write, False)
         self.lease_seconds = 30
         self.last_contact = time.monotonic()
         if any(
@@ -201,6 +218,7 @@ class Worker:
                 self.signal_group(slot, signal.SIGKILL)
                 self.budget.release(slot.workspace.name)
                 slot.logs.close()
+                slot.close_pipe()
                 shutil.rmtree(slot.workspace)
             workspace = self.root / f"runner-{index}-{uuid.uuid4().hex}"
             workspace.mkdir()
@@ -208,6 +226,7 @@ class Worker:
             self.runner_snapshot = tuple(self.runners.values())
 
     def start_runner(self, workspace):
+        notify_read, notify_write = os.pipe()
         command = [
             sys.executable,
             "-m",
@@ -231,20 +250,32 @@ class Worker:
             str(self.runner_io_workers),
             "--io-map-workers",
             str(self.runner_io_map_workers),
+            "--notify-fd",
+            str(notify_read),
+            "--completion-fd",
+            str(self.completion_write),
         ]
         if self.allow_gil:
             command.append("--allow-gil")
         capture = LogCapture(workspace / "runner.log")
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            env=os.environ | {"PYTHONUNBUFFERED": "1"},
-        )
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                pass_fds=(notify_read, self.completion_write),
+                env=os.environ | {"PYTHONUNBUFFERED": "1"},
+            )
+        except BaseException:
+            os.close(notify_write)
+            capture.close()
+            raise
+        finally:
+            os.close(notify_read)
         capture.start(process.stdout)
         log.info("runner_started pid=%s slot=%s", process.pid, workspace.name)
-        return Slot(process, workspace, logs=capture)
+        return Slot(process, workspace, logs=capture, job_fd=notify_write)
 
     def available_runner(self):
         for slot in self.runners.values():
@@ -269,15 +300,26 @@ class Worker:
         slot.busy = True
         with self.running_lock:
             self.running[assignment["attempt_id"]] = running
+        self.safety_wakeup.set()
         atomic_json(
             slot.workspace / "job.json",
             {"workspace": str(workspace), "attempt_id": assignment["attempt_id"]},
+            durable=False,
         )
+        if slot.job_fd is not None:
+            os.write(slot.job_fd, b"1")
         log.info(
             "task_started task=%s attempt=%s pid=%s",
             assignment["task_id"],
             assignment["attempt_id"],
             slot.process.pid,
+            extra={
+                "task_id": assignment["task_id"],
+                "attempt_id": assignment["attempt_id"],
+                "worker_session": self.session,
+                "runner_id": slot.workspace.name,
+                "pid": slot.process.pid,
+            },
         )
 
     @staticmethod
@@ -303,7 +345,7 @@ class Worker:
     def lease_watchdog(self):
         # Networking can block for seconds per attempt. Lease safety must not share
         # the networking loop, especially with many concurrent file tasks.
-        while not self.watchdog_stopped.wait(0.05):
+        while not self.watchdog_stopped.is_set():
             self.last_safety_check = time.monotonic()
             with self.running_lock:
                 items = list(self.running.values())
@@ -311,6 +353,8 @@ class Worker:
                 with running.lock:
                     if time.monotonic() >= running.deadline or running.invalid:
                         self.stop_task(running, invalid=True)
+            self.safety_wakeup.wait(0.05 if items else 0.5)
+            self.safety_wakeup.clear()
 
     @staticmethod
     def read_json(path, default=None):
@@ -334,6 +378,105 @@ class Worker:
         shutil.rmtree(running.workspace)
         with self.running_lock:
             self.running.pop(aid)
+        self.progress_sent.pop(aid, None)
+
+    def pulse(self, renewals=(), *, claim=False):
+        if claim and not self.pending_claims and not self.stopped.is_set() and not self.draining:
+            free = sum(
+                not s.busy
+                and s.process.poll() is None
+                and self.read_json(s.workspace / "state.json", {}).get("state") == "READY"
+                for s in self.runners.values()
+            )
+            self.pending_claims = [str(uuid.uuid4()) for _ in range(min(32, free))]
+        claims = list(self.pending_claims) if claim else []
+        started = time.monotonic()
+        result = self.request(
+            "pulse",
+            {
+                "session_id": self.session,
+                "draining": self.stopped.is_set(),
+                "telemetry": {
+                    "scheduler": self.budget.snapshot(),
+                    "runtime": self.telemetry.get("runtime", {}),
+                },
+                "renewals": list(renewals),
+                "claims": claims,
+            },
+        )
+        self.last_contact = time.monotonic()
+        self.failures.recovered("control", log)
+        self.draining = result["draining"]
+        empty_queue = False
+        for item in result["claims"]:
+            assignment = item.get("assignment")
+            if assignment and assignment["attempt_id"] not in self.running:
+                slot = self.available_runner()
+                if slot is None:
+                    continue  # Keep the ID and replay; never abandon a delivered lease.
+                self.spawn(assignment, started, slot)
+            if item["claim_id"] in self.pending_claims:
+                self.pending_claims.remove(item["claim_id"])
+            empty_queue |= assignment is None
+        return {r["aid"]: (r, started) for r in result["renewals"]}, empty_queue
+
+    def progress(self, running):
+        progress = self.read_json(running.workspace / "progress.json", {})
+        progress["log_tail"] = running.log_file.tail()
+        while len(canonical(progress)) > 262144 and progress["log_tail"]:
+            progress["log_tail"] = progress["log_tail"][len(progress["log_tail"]) // 2 + 1 :]
+        return progress
+
+    def complete(self, running, payload):
+        # A file can finish while its earlier pulse is in flight. Persist the
+        # final snapshot with the result, rather than that pulse's stale progress.
+        progress = self.progress(running)
+        body = {**self.identity(running), **payload, "progress": progress}
+        if len(canonical(body)) > 1000000:
+            # Big results and diagnostics may each fit but not fit together.
+            # Flush diagnostics with the fenced renewal before the result.
+            started = time.monotonic()
+            renewed = self.request("renew", {**self.identity(running), "progress": progress})
+            with running.lock:
+                if running.invalid:
+                    raise APIError(409, "execution lease is no longer valid")
+                running.deadline = started + renewed["lease_seconds"]
+            if renewed["cancel"]:
+                self.stop_task(running, cancelling=True)
+                return False
+            body.pop("progress")
+        return self.request("complete", body)
+
+    def renew_batch(self):
+        batches, current, size, hashes = [], [], 0, {}
+        for aid, running in list(self.running.items()):
+            if running.invalid or time.monotonic() >= running.deadline:
+                self.stop_task(running, invalid=True)
+                continue
+            progress = self.progress(running)
+            encoded = canonical(progress)
+            hashed = hashlib.sha256(encoded.encode()).hexdigest()
+            hashes[aid] = hashed
+            identity = self.identity(running)
+            identity.pop("session_id")
+            if self.progress_sent.get(aid) != hashed:
+                identity["progress"] = progress
+            length = len(canonical(identity))
+            if current and (len(current) >= 32 or size + length > 1000000):
+                batches.append(current)
+                current, size = [], 0
+            current.append(identity)
+            size += length
+        batches.append(current)
+        renewed, empty_queue = {}, False
+        for index, batch in enumerate(batches):
+            values, empty = self.pulse(batch, claim=index == 0)
+            renewed.update(values)
+            empty_queue |= empty
+            for aid, (value, _) in values.items():
+                if "status" not in value:
+                    self.progress_sent[aid] = hashes[aid]
+        return renewed, empty_queue
 
     def tick(self):
         if not self.registered:
@@ -353,11 +496,8 @@ class Worker:
             if self.interval >= self.lease_seconds / 3:
                 raise ValueError("heartbeat interval must be less than one third of lease duration")
             self.registered = True
-        heartbeat = self.request(
-            "heartbeat", {"session_id": self.session, "draining": self.stopped.is_set()}
-        )
-        self.draining = heartbeat.get("draining", False)
-        self.last_contact = time.monotonic()
+        renewed_batch, empty_queue = self.renew_batch()
+        original_active = len(self.running)
         for aid, running in list(self.running.items()):
             now = time.monotonic()
             if now >= running.deadline:
@@ -367,17 +507,13 @@ class Worker:
                     self.clean(aid, running)
                 continue
             try:
-                progress = self.read_json(running.workspace / "progress.json", {})
-                progress["scheduler"] = self.budget.snapshot()
-                progress["log_tail"] = running.log_file.tail()
-                # JSON escaping can expand a non-UTF8 log tail by up to 6x.
-                # Diagnostic output must never invalidate an otherwise healthy lease.
-                while len(canonical(progress)) > 262144 and progress["log_tail"]:
-                    progress["log_tail"] = progress["log_tail"][
-                        len(progress["log_tail"]) // 2 + 1 :
-                    ]
-                started = time.monotonic()
-                renewed = self.request("renew", {**self.identity(running), "progress": progress})
+                value = renewed_batch.get(aid)
+                if value is None:
+                    continue  # Just claimed in this pulse; its initial lease is already fenced.
+                renewed, started = value
+                if "status" in renewed:
+                    self.stop_task(running, invalid=True)
+                    continue
                 with running.lock:
                     if running.invalid:
                         continue
@@ -415,8 +551,8 @@ class Worker:
                 payload = running.payload
                 if running.cancelling:
                     payload = {"state": "CANCELLED", "error": "cancelled", "retryable": False}
-                self.request("complete", {**self.identity(running), **payload})
-                self.clean(aid, running)
+                if self.complete(running, payload):
+                    self.clean(aid, running)
             except APIError as exc:
                 if exc.status in (404, 409):
                     self.stop_task(running, invalid=True)
@@ -424,30 +560,9 @@ class Worker:
                     log.warning("attempt_request_failed status=%s attempt=%s", exc.status, aid)
             except OSError, TimeoutError:
                 log.warning("attempt_request_unavailable attempt=%s", aid)
-        # Fill available slots in this tick; one claim per interval throttles a
-        # multi-slot executor to at most 1/interval files per second.
-        for _ in range(min(32, self.slots - len(self.running))):
-            if self.stopped.is_set() or self.draining:
-                break
-            slot = self.available_runner()
-            if slot is None:
-                break
-            started = time.monotonic()
-            try:
-                assignment = self.request(
-                    "claim", {"session_id": self.session, "claim_id": self.claim_id}
-                )["assignment"]
-            except APIError as exc:
-                if exc.status == 409:
-                    self.claim_id = str(uuid.uuid4())
-                    return
-                raise
-            if assignment:
-                if assignment["attempt_id"] not in self.running:
-                    self.spawn(assignment, started, slot)
-                self.claim_id = str(uuid.uuid4())
-            else:
-                break
+        # Reuse slots completed in this tick, without waiting a full heartbeat interval.
+        if len(self.running) < original_active and not empty_queue:
+            self.pulse(claim=True)
 
     def health_loop(self):
         # Dependency outages can block several HTTP calls. They must affect
@@ -455,6 +570,8 @@ class Worker:
         while not self.watchdog_stopped.is_set():
             now = time.monotonic()
             try:
+                runtime = self.runtime_snapshot()
+                self.telemetry = {"runtime": runtime}
                 atomic_json(
                     self.root.parent / "health.json",
                     {
@@ -473,16 +590,46 @@ class Worker:
                             for slot in self.runner_snapshot
                         ),
                         "scheduler": self.budget.snapshot(),
+                        "runtime": runtime,
                     },
+                    durable=False,
                 )
             except Exception:
                 log.exception("worker_health_publish_failed")
-            self.watchdog_stopped.wait(0.5)
+            self.watchdog_stopped.wait(2)
+
+    def runtime_snapshot(self):
+        # RSS is a sampled sum, including shared pages; it is not cgroup usage or
+        # the scheduler's declared memory reservation. Null means /proc unavailable.
+        pids = [os.getpid()] + [
+            s.process.pid for s in self.runner_snapshot if s.process.poll() is None
+        ]
+        rss = []
+        for pid in pids:
+            try:
+                pages = int(Path(f"/proc/{pid}/statm").read_text().split()[1])
+                rss.append(pages * os.sysconf("SC_PAGE_SIZE") / 1048576)
+            except OSError, IndexError, ValueError:
+                pass
+        return {
+            "processes": len(pids),
+            "runner_processes": len(pids) - 1,
+            "sampled_rss_mb": sum(rss) if len(rss) == len(pids) else None,
+            "sampled_at": time.time(),
+        }
 
     def run(self):
         require_free_threading(self.allow_gil)
-        signal.signal(signal.SIGTERM, lambda *_: self.stopped.set())
-        signal.signal(signal.SIGINT, lambda *_: self.stopped.set())
+
+        def stop(*_):
+            self.stopped.set()
+            try:
+                os.write(self.completion_write, b"1")
+            except OSError:
+                pass
+
+        signal.signal(signal.SIGTERM, stop)
+        signal.signal(signal.SIGINT, stop)
         next_tick = 0
         watchdog = threading.Thread(target=self.lease_watchdog, name="lease-watchdog", daemon=True)
         watchdog.start()
@@ -504,11 +651,25 @@ class Worker:
                     try:
                         self.tick()
                     except (OSError, TimeoutError, APIError) as exc:
-                        log.warning("control_unavailable error=%s", type(exc).__name__)
+                        if isinstance(exc, APIError) and exc.status == 404:
+                            self.registered = False
+                        self.failures.failed(
+                            "control", log, "control_unavailable error=%s", type(exc).__name__
+                        )
                     next_tick = time.monotonic() + self.interval
-                time.sleep(0.05)
+                timeout = max(0.001, min(0.5, next_tick - time.monotonic()))
+                if select.select([self.completion_read], [], [], timeout)[0]:
+                    while True:
+                        try:
+                            os.read(self.completion_read, 4096)
+                        except BlockingIOError:
+                            break
+                    # Slot readiness/completion is an event, independent of the
+                    # periodic lease/progress pulse. Short files need not wait for it.
+                    next_tick = 0
         finally:
             self.watchdog_stopped.set()
+            self.safety_wakeup.set()
             watchdog.join(timeout=2)
             health_thread.join(timeout=6)
             for aid, running in list(self.running.items()):
@@ -526,10 +687,16 @@ class Worker:
                 slot.process.wait(timeout=2)
                 self.budget.release(slot.workspace.name)
                 slot.logs.close()
+                slot.close_pipe()
                 shutil.rmtree(slot.workspace)
             # Never delete output files here: accepted results outlive the worker Pod.
             self.budget.close()
+            self.close_notifications()
             shutil.rmtree(self.root)
+
+    def close_notifications(self):
+        os.close(self.completion_read)
+        os.close(self.completion_write)
 
 
 def parent_death_signal(parent_pid):

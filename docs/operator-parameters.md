@@ -19,7 +19,6 @@
 ```bash
 python3 scripts/init-demo.py
 docker compose up --build -d
-# 管理令牌从 .env 设置到当前环境
 set -a
 source .env
 set +a

@@ -19,12 +19,12 @@ const states = {
 };
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
 let api = null,
-  version = "0.6.0",
+  version = "0.7.0",
   epoch = 0,
   refreshing = false,
   connected = false;
-let role = "admin", operations = null, auditRows = [], admissionPaused = false;
-const canWrite = () => connected && role !== "viewer";
+let operations = null, admissionPaused = false;
+const canWrite = () => connected;
 const canSubmit = () => canWrite() && !admissionPaused;
 let dataRevision = 0;
 const stoppingTasks = new Set();
@@ -90,7 +90,7 @@ function run(action, isDisabled = () => false) {
       if (error instanceof APIError && error.status === 401) {
         connected = false;
         connectionUI();
-        notify("管理令牌失效，请重新配置 API 连接。当前展示的是上次获取的数据。");
+        notify("API 入口拒绝访问，请重新配置连接。当前展示的是上次获取的数据。");
       } else notify(error.message);
     } finally {
       if (node instanceof HTMLButtonElement && node.isConnected)
@@ -223,7 +223,7 @@ async function confirm(title, text) {
 }
 function connectionUI() {
   $("#connection-label").textContent = connected
-    ? (role === "viewer" ? "API 已连接（只读）" : "API 已连接")
+    ? "API 已连接"
     : "配置 API 连接";
   $("#connection-dot").className = "live-dot" + (connected ? "" : " offline");
   paintTaskActions();
@@ -231,7 +231,6 @@ function connectionUI() {
 function resetData() {
   admissionPaused = false;
   operations = null;
-  auditRows = [];
   rows = [];
   workers = [];
   counts = {};
@@ -247,7 +246,6 @@ function openConnection() {
     localStorage.getItem("dataflow-api-base") ||
     window.DATAFLOW_CONFIG?.apiBase ||
     "/api";
-  $("#api-token").value = "";
   $("#connect-error").textContent = "";
   $("#connect-dialog").showModal();
 }
@@ -271,10 +269,7 @@ $("#connect-form").onsubmit = async (event) => {
   submit.disabled = true;
   const connectionEpoch = ++epoch;
   try {
-    const candidate = new API(
-      $("#api-url").value,
-      $("#api-token").value.trim(),
-    );
+    const candidate = new API($("#api-url").value);
     const overview = await candidate.request("/v1/overview");
     if (epoch !== connectionEpoch) return;
     cancelUpload();
@@ -286,14 +281,12 @@ $("#connect-form").onsubmit = async (event) => {
     }
     api = candidate;
     connected = true;
-    role = overview.role || "admin";
     version = overview.version;
     resetData();
     counts = overview.task_counts;
     admissionPaused = !!overview.paused;
     localStorage.setItem("dataflow-api-base", api.base);
-    $("#api-token").value = "";
-    connectionUI();
+      connectionUI();
     $("#connect-dialog").close();
     $("#notice").hidden = true;
     if (route !== "dag") render();
@@ -342,13 +335,10 @@ async function refresh(manual = false) {
       if (!isCurrent()) return;
       workers = result.workers;
     } else if (activeRoute === "operations") {
-      const [control, audit] = await Promise.all([
-        client.request("/v1/control"), client.request("/v1/audit?limit=100"),
-      ]);
+      const control = await client.request("/v1/control");
       if (!isCurrent()) return;
       operations = control;
       admissionPaused = !!control.paused;
-      auditRows = audit.events;
     } else if (activeRoute === "dag") {
       const overview = await client.request("/v1/overview");
       if (!isCurrent()) return;
@@ -379,7 +369,7 @@ async function refresh(manual = false) {
     if (error instanceof APIError && error.status === 401) {
       connected = false;
       connectionUI();
-      notify("管理令牌失效，请重新配置 API 连接。当前展示的是上次获取的数据。");
+      notify("API 入口拒绝访问，请重新配置连接。当前展示的是上次获取的数据。");
     }
   } finally {
     refreshing = false;
@@ -555,7 +545,7 @@ function renderTasks() {
             connected ? "暂无任务" : "连接 API 后查看任务",
             connected
               ? "调整筛选条件，或创建一个文件处理任务。"
-              : "点击左下角连接设置，输入管控节点地址和管理令牌。",
+              : "点击左下角连接设置，输入管控节点地址。",
           ),
       h(
         "div",
@@ -605,8 +595,7 @@ function stopTaskReason() {
   if (terminal.has(detail.state)) return `当前任务${states[detail.state]}，无需停止。`;
   if (detail.state === "STOPPING")
     return "停止请求已接收，正在等待执行器退出；完成后状态会变为已取消。";
-  if (!connected) return "API 未连接或管理令牌已失效，请通过「配置 API 连接」重新连接后停止任务。";
-  if (role === "viewer") return "当前是只读连接，停止任务需要管理令牌。";
+  if (!connected) return "API 未连接，请通过「配置 API 连接」重新连接后停止任务。";
   if (stoppingTasks.has(detail.id)) return "正在确认或发送停止请求，请稍候。";
   if (!["QUEUED", "RUNNING"].includes(detail.state))
     return `当前任务状态 ${detail.state} 无法停止，请刷新任务状态。`;
@@ -891,6 +880,7 @@ function renderDetail() {
             ["尝试 ID", attempt?.id],
             ["执行器会话", attempt?.worker_session],
             ["运行进程 PID", p.runner?.pid],
+            ["运行槽位身份", p.runner?.generation],
             ["此前完成文件", p.runner?.tasks_before],
             ["状态", attempt ? badge(attempt.state) : "等待分配"],
             ["开始时间", date(attempt?.started_at)],
@@ -938,7 +928,11 @@ function renderWorkers() {
               ["执行池", worker.pool],
               ["运行版本", worker.runtime_version],
               ["并发槽位", worker.slots],
-              ["CPU / 内存", `${worker.cpu} / ${worker.memory_mb} MiB`],
+              ["CPU / 内存容量", `${worker.cpu} / ${worker.memory_mb} MiB`],
+              ["文件运行 / 空闲槽位", `${worker.active_tasks ?? "—"} / ${worker.free_slots ?? "—"}`],
+              ["采样 RSS（进程求和）", worker.runtime?.sampled_rss_mb == null ? "当前环境未提供" : `${worker.runtime.sampled_rss_mb.toFixed(1)} MiB`],
+              ["常驻执行进程", worker.runtime?.runner_processes ?? "—"],
+              ["快照年龄", seconds(worker.telemetry_age_seconds)],
               ["当前资源预留", worker.scheduler ? `CPU ${worker.scheduler.cpu} / ${worker.scheduler.memory_mb} MiB` : "当前无资源快照"],
               ["算子运行 / 等待", worker.scheduler ? `${worker.scheduler.active_operators} / ${worker.scheduler.waiting_operators}` : "—"],
               ["IO 运行 / 上限", worker.scheduler ? `${worker.scheduler.io_operators} / ${worker.scheduler.io_concurrency}` : "—"],
@@ -986,7 +980,7 @@ function renderWorkers() {
     h(
       "p",
       { class: "hint" },
-      "CPU 与内存为调度声明，实际限制由 Pod 资源配置控制。旧会话保留用于审计，心跳过期显示离线。",
+      "CPU 与内存为调度声明，实际限制由 Pod 资源配置控制。旧会话保留用于故障定位，心跳过期显示离线。",
     ),
   ];
 }
@@ -1008,18 +1002,16 @@ function renderOperations() {
         render();
         await refresh();
       }, "primary", () => !canWrite() || !operations)),
-    role === "viewer" ? h("p", {class: "hint"}, "当前为只读连接，维护控制需要管理令牌。") : null,
     panel("生产状态", state ? kv([
       ["任务接入", state.paused ? "维护暂停（重启后保留）" : "正常"],
       ["未结束任务 / 上限", `${state.unfinished_tasks} / ${state.max_unfinished_tasks || "不限制"}`],
       ["活跃执行 / 上传", `${state.active_attempts} / ${state.active_uploads}`],
       ["维护静止状态", state.quiescent ? "已暂停且执行与上传归零，可开始受控备份" : "尚未静止"],
       ["最近恢复扫描成功", date(state.reconciliation_last_success_at)],
-    ]) : empty("连接 API 后查看", "维护与审计状态由管控 API 持久化。")),
-    panel("管理审计（最近 100 条）", auditRows.length ? auditRows.map(event => h("div", {class: "event"},
-      h("span", {class: "muted"}, date(event.created_at)),
-      h("strong", {}, event.action), h("code", {}, `${event.role}:${event.principal} · ${event.target || "control"} · ${event.request_id || "system"}`),
-    )) : empty("暂无审计记录", "任务提交、停止、重试、排空和维护切换与状态同事务记录。")),
+      ["元数据后端", state.database?.backend],
+      ...(state.database?.backend === "postgres" ? [["数据库连接 / 可用 / 等待请求", `${state.database.pool.pool_size ?? 0} / ${state.database.pool.pool_available ?? 0} / ${state.database.pool.requests_waiting ?? 0}`]] : []),
+    ]) : empty("连接 API 后查看", "维护状态由管控 API 持久化。")),
+
   ];
 }
 
@@ -1128,8 +1120,8 @@ function paintUpload() {
   $("#submit-dag").disabled = !canSubmit() || submitting || pendingUpload();
   const hint = $("#admission-status");
   if (hint) {
-    hint.hidden = !admissionPaused && role !== "viewer";
-    hint.textContent = admissionPaused ? "维护暂停：可编辑与导出草稿，新提交与上传暂不可用。" : "当前为只读连接，上传与提交需要管理令牌。";
+    hint.hidden = !admissionPaused;
+    hint.textContent = "维护暂停：可编辑与导出草稿，新提交与上传暂不可用。";
   }
 }
 function cancelUpload() {
@@ -1292,7 +1284,7 @@ async function importDraft(file) {
   render();
 }
 async function submitDraft() {
-  if (!canWrite()) throw new Error("提交任务需要连接管理令牌；当前连接为只读或未连接。");
+  if (!canWrite()) throw new Error("请先连接管控节点 API，再提交任务。");
   if (admissionPaused) throw new Error("管控处于维护暂停，请在运维页恢复接入后再提交。");
   if (submitting) return;
   if (pendingUpload()) throw new Error("请先完成文件上传，或清除所选文件后使用共享路径。");
@@ -1553,7 +1545,7 @@ function renderDAG() {
   return [
     heading(
       "DAG 编排",
-      role === "viewer" ? "当前为只读连接，可编辑和导出本地草稿；上传与提交需要管理令牌。" : "配置文件任务、算子参数与依赖关系，校验后交由管控节点调度。",
+      "配置文件任务、算子参数与依赖关系，校验后交由管控节点调度。",
       h(
         "div",
         { class: "actions" },
@@ -1569,7 +1561,7 @@ function renderDAG() {
         submitButton,
       ),
     ),
-    h("p", {id: "admission-status", class: "hint", hidden: !admissionPaused && role !== "viewer"}, admissionPaused ? "维护暂停：可编辑与导出草稿，新提交与上传暂不可用。" : "当前为只读连接，上传与提交需要管理令牌。"),
+    h("p", {id: "admission-status", class: "hint", hidden: !admissionPaused}, "维护暂停：可编辑与导出草稿，新提交与上传暂不可用。"),
     importInput,
     validation
       ? h(
@@ -1600,7 +1592,7 @@ function renderDAG() {
       button("保存草稿", () => {
         syncDraft();
         localStorage.setItem("dataflow-dag-draft", JSON.stringify(draft));
-        notify("草稿已保存在此浏览器，不含管理令牌", true);
+        notify("草稿已保存在此浏览器", true);
       }),
       button("加载草稿", () => {
         const saved = localStorage.getItem("dataflow-dag-draft");

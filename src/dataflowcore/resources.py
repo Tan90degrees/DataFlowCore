@@ -4,8 +4,13 @@ This database is local ephemeral coordination, not task persistence. Only the
 supervisor may reclaim an owner, after its process group has been terminated.
 """
 
+import hashlib
+import os
+import select
 import sqlite3
+import tempfile
 import threading
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from time import monotonic
@@ -33,7 +38,7 @@ class ResourceBudget:
                     CREATE TABLE IF NOT EXISTS owners (
                         owner TEXT PRIMARY KEY, cpu_limit INTEGER NOT NULL,
                         io_limit INTEGER NOT NULL, peak_cpu INTEGER DEFAULT 0,
-                        peak_memory INTEGER DEFAULT 0);
+                        peak_memory INTEGER DEFAULT 0, notification TEXT);
                     CREATE TABLE IF NOT EXISTS requests (
                         seq INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL,
                         key TEXT NOT NULL, workload TEXT NOT NULL, cpu INTEGER NOT NULL,
@@ -54,6 +59,50 @@ class ResourceBudget:
         )
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA synchronous=NORMAL")
+        # Coordination stays authoritative in SQLite. FIFO notifications are
+        # hints only: a bounded wait always rechecks after packet loss or process death.
+        digest = hashlib.sha256(os.path.abspath(self.path).encode()).hexdigest()[:24]
+        self.notify_dir = Path(tempfile.gettempdir()) / f"dfc-budget-{os.getuid()}-{digest}"
+        self.notify_dir.mkdir(mode=0o700, exist_ok=True)
+        self.notify_path = self.notify_dir / uuid.uuid4().hex
+        temporary = self.notify_path.with_name("." + self.notify_path.name)
+        os.mkfifo(temporary, mode=0o600)
+        self.notification = os.open(temporary, os.O_RDWR | os.O_NONBLOCK)
+        temporary.rename(self.notify_path)
+
+    def wake(self):
+        try:
+            os.write(self.notification, b"1")
+        except OSError:
+            pass
+
+    def notify(self, paths, include_self=True):
+        for value in paths:
+            if not value:
+                continue
+            path = Path(value)
+            if not include_self and path == self.notify_path:
+                continue
+            try:
+                fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError as exc:
+                if exc.errno in (2, 6):
+                    path.unlink(missing_ok=True)
+                continue
+            try:
+                os.write(fd, b"1")
+            except OSError:
+                pass
+            finally:
+                os.close(fd)
+
+    def wait(self, timeout=0.5):
+        if select.select([self.notification], [], [], timeout)[0]:
+            while True:
+                try:
+                    os.read(self.notification, 4096)
+                except BlockingIOError:
+                    break
 
     @contextmanager
     def transaction(self):
@@ -75,20 +124,23 @@ class ResourceBudget:
         ).fetchone()
 
     def dispatch(self, db):
+        pending = [
+            dict(r) for r in db.execute("SELECT * FROM requests WHERE granted=0 ORDER BY seq")
+        ]
+        if not pending:
+            return set()
         capacity, used = db.execute("SELECT * FROM capacity WHERE id=1").fetchone(), self.totals(db)
         cpu, memory, io = used["cpu"], used["memory"], used["io"]
         owners = {}
         for row in db.execute(
-            "SELECT o.owner,o.cpu_limit,o.io_limit,COALESCE(SUM(r.cpu),0) cpu, "
+            "SELECT o.owner,o.cpu_limit,o.io_limit,o.notification,COALESCE(SUM(r.cpu),0) cpu, "
             "COALESCE(SUM(r.memory),0) memory,COALESCE(SUM(r.workload='cpu'),0) cpu_count, "
             "COALESCE(SUM(r.workload='io'),0) io_count FROM owners o LEFT JOIN requests r "
             "ON r.owner=o.owner AND r.granted=1 GROUP BY o.owner"
         ):
             owners[row["owner"]] = dict(row)
-        pending = [
-            dict(r) for r in db.execute("SELECT * FROM requests WHERE granted=0 ORDER BY seq")
-        ]
         now = monotonic()
+        grants = set()
 
         def eligible(row):
             owner = owners[row["owner"]]
@@ -132,6 +184,7 @@ class ResourceBudget:
                 if not candidates:
                     break
                 selected = min(candidates, key=share)
+            grants.add(owners[selected["owner"]]["notification"])
             db.execute("UPDATE requests SET granted=1 WHERE seq=?", (selected["seq"],))
             owner = owners[selected["owner"]]
             owner["cpu"] += selected["cpu"]
@@ -146,19 +199,22 @@ class ResourceBudget:
             memory += selected["memory"]
             io += selected["workload"] == "io"
             pending.remove(selected)
-        db.execute(
-            "UPDATE capacity SET peak_cpu=MAX(peak_cpu,?), peak_memory=MAX(peak_memory,?), "
-            "peak_io=MAX(peak_io,?) WHERE id=1",
-            (cpu, memory, io),
-        )
+        if grants:
+            db.execute(
+                "UPDATE capacity SET peak_cpu=MAX(peak_cpu,?), peak_memory=MAX(peak_memory,?), "
+                "peak_io=MAX(peak_io,?) WHERE id=1",
+                (cpu, memory, io),
+            )
+        return grants
 
     def configure_owner(self, owner, cpu_limit, io_limit):
         integer(cpu_limit, "CPU pool limit", 1, 256)
         integer(io_limit, "IO pool limit", 1, 256)
         with self.transaction() as db:
             db.execute(
-                "INSERT OR IGNORE INTO owners(owner,cpu_limit,io_limit) VALUES(?,?,?)",
-                (owner, cpu_limit, io_limit),
+                "INSERT OR IGNORE INTO owners(owner,cpu_limit,io_limit,notification) "
+                "VALUES(?,?,?,?)",
+                (owner, cpu_limit, io_limit, str(self.notify_path)),
             )
 
     def begin_attempt(self, owner):
@@ -187,7 +243,9 @@ class ResourceBudget:
             if any(v[3] > capacity["cpu"] or v[4] > capacity["memory"] for v in values):
                 raise Invalid("operator resources exceed executor capacity")
             db.execute(
-                "INSERT OR IGNORE INTO owners(owner,cpu_limit,io_limit) VALUES(?,256,256)", (owner,)
+                "INSERT OR IGNORE INTO owners(owner,cpu_limit,io_limit,notification) "
+                "VALUES(?,256,256,?)",
+                (owner, str(self.notify_path)),
             )
             db.executemany(
                 "INSERT OR IGNORE INTO requests(owner,key,workload,cpu,memory,created) "
@@ -203,25 +261,36 @@ class ResourceBudget:
                 for v in values
             ):
                 raise Invalid("resource request identity cannot change")
-            self.dispatch(db)
-            return {
+            dispatched = self.dispatch(db)
+            granted = {
                 r[0]
                 for r in db.execute(
                     "SELECT key FROM requests WHERE owner=? AND granted=1", (owner,)
                 )
             }
+        if dispatched:
+            self.notify(dispatched, include_self=False)
+        return granted
 
     def acquire(self, owner, key, workload, resources):
         return key in self.schedule(owner, [(key, workload, resources)])
 
     def release(self, owner, key=None):
+        removed_notification = None
         with self.transaction() as db:
             if key is None:
+                row = db.execute(
+                    "SELECT notification FROM owners WHERE owner=?", (owner,)
+                ).fetchone()
+                removed_notification = row[0] if row else None
                 db.execute("DELETE FROM requests WHERE owner=?", (owner,))
                 db.execute("DELETE FROM owners WHERE owner=?", (owner,))
             else:
                 db.execute("DELETE FROM requests WHERE owner=? AND key=?", (owner, key))
-            self.dispatch(db)
+            granted = self.dispatch(db)
+        self.notify(granted)
+        if removed_notification and removed_notification != str(self.notify_path):
+            Path(removed_notification).unlink(missing_ok=True)
 
     def snapshot(self):
         with self.lock:
@@ -258,3 +327,9 @@ class ResourceBudget:
     def close(self):
         with self.lock:
             self.connection.close()
+            os.close(self.notification)
+            self.notify_path.unlink(missing_ok=True)
+            try:
+                self.notify_dir.rmdir()
+            except OSError:
+                pass

@@ -48,6 +48,15 @@ jobs:
           python scripts/business_benchmark.py --files 24 --workers 2 --slots 4 --dsn "$DATAFLOW_TEST_DATABASE_URL" --output .e2e/business-postgres.json
           python scripts/business_benchmark.py --files 120 --workers 2 --slots 4 --chars 2048 --dsn "$DATAFLOW_TEST_DATABASE_URL" --output .e2e/business-batch-120.json
           python scripts/benchmark_operator_scheduling.py --files 8 --repetitions 1 --dsn "$DATAFLOW_TEST_DATABASE_URL" --output-dir .e2e/operators
+      - uses: actions/checkout@v4
+        with:
+          ref: fe536bac72f6cd16cc1c4c347e4b8f27b6621dde
+          path: .e2e/baseline-0.6
+      - name: Internal component efficiency regression
+        run: |
+          python scripts/benchmark_internal.py --baseline-source .e2e/baseline-0.6 --repetitions 2 --files 16 --interval 2 --idle-seconds 8 --dsn "$DATAFLOW_TEST_DATABASE_URL" --output .e2e/internal-efficiency/default.json
+          python scripts/verify_efficiency.py .e2e/internal-efficiency/default.json
+          python -c 'import json; print(json.dumps(json.load(open(".e2e/internal-efficiency/default.json"))["summary"]))'
       - name: Native PostgreSQL and shared-file restore drill
         run: python scripts/verify_backup_restore.py --dsn "$DATAFLOW_TEST_DATABASE_URL" --pg-container "${{ job.services.postgres.id }}"
       - uses: actions/upload-artifact@v4
@@ -58,6 +67,7 @@ jobs:
             .e2e/business-*.json
             .e2e/operators/*.json
             .e2e/backup-restore-evidence.json
+            .e2e/internal-efficiency/*.json
           include-hidden-files: true
       - run: python -m build
       - uses: azure/setup-helm@v4.3.0

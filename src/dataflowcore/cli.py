@@ -47,7 +47,7 @@ def parser():
         default=os.getenv("DATAFLOW_CORS_ORIGINS", ""),
         help="comma-separated exact browser origins; empty disables cross-origin access",
     )
-    control.add_argument("--insecure", action="store_true", help="development only")
+    control.add_argument("--insecure", action="store_true", help=argparse.SUPPRESS)
     control.add_argument("--allow-gil", action="store_true", help="development only")
     control.add_argument(
         "--max-unfinished", type=int, default=int(os.getenv("DATAFLOW_MAX_UNFINISHED", "10000"))
@@ -55,7 +55,6 @@ def parser():
     control.add_argument(
         "--db-timeout-ms", type=int, default=int(os.getenv("DATAFLOW_DB_TIMEOUT_MS", "5000"))
     )
-    control.add_argument("--operator-modules", default=os.getenv("DATAFLOW_OPERATOR_MODULES", ""))
     control.add_argument(
         "--upload-min-free-bytes",
         type=int,
@@ -133,12 +132,17 @@ def parser():
     runner.add_argument("--budget-path")
     runner.add_argument("--io-workers", type=int, default=16)
     runner.add_argument("--io-map-workers", type=int, default=16)
+    runner.add_argument("--notify-fd", type=int)
+    runner.add_argument("--completion-fd", type=int)
     return p
 
 
 def main():
     args = parser().parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.basicConfig(
+        level=os.getenv("DATAFLOW_LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     if getattr(args, "log_format", os.getenv("DATAFLOW_LOG_FORMAT", "json")) == "json":
         from .observability import JSONFormatter
 
@@ -146,7 +150,6 @@ def main():
             handler.setFormatter(JSONFormatter())
     if args.command == "control":
         from .api import serve
-        from .security import token_list
 
         require_free_threading(args.allow_gil)
         serve(
@@ -154,8 +157,8 @@ def main():
             args.host,
             args.port,
             args.data_root,
-            os.getenv("DATAFLOW_ADMIN_TOKEN", ""),
-            os.getenv("DATAFLOW_WORKER_TOKEN", ""),
+            "",
+            "",
             args.insecure,
             args.lease,
             cors_origins=[
@@ -165,10 +168,6 @@ def main():
             upload_concurrency=args.upload_concurrency,
             upload_timeout=args.upload_timeout,
             upload_dir=args.upload_dir,
-            viewer_tokens=token_list(os.getenv("DATAFLOW_VIEWER_TOKENS", "")),
-            admin_tokens=token_list(os.getenv("DATAFLOW_ADMIN_TOKENS", "")),
-            worker_tokens=token_list(os.getenv("DATAFLOW_WORKER_TOKENS", "")),
-            operator_modules=token_list(args.operator_modules),
             upload_min_free_bytes=args.upload_min_free_bytes,
             max_unfinished=args.max_unfinished,
             db_timeout_ms=args.db_timeout_ms,
@@ -211,6 +210,8 @@ def main():
             args.budget_path,
             args.io_workers,
             args.io_map_workers,
+            args.notify_fd,
+            args.completion_fd,
         )
     elif args.command == "_run":
         from .worker import parent_death_signal

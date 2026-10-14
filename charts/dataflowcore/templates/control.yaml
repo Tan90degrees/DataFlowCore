@@ -32,17 +32,6 @@ spec:
               value: {{ dig "dbTimeoutMS" 5000 .Values.control | int64 | quote }}
             - name: DATAFLOW_UPLOAD_MIN_FREE_BYTES
               value: {{ dig "uploadMinFreeBytes" 67108864 .Values.control | int64 | quote }}
-            - name: DATAFLOW_OPERATOR_MODULES
-              value: {{ join "," (dig "operatorModules" (list) .Values.control) | quote }}
-            - name: DATAFLOW_VIEWER_TOKENS
-              valueFrom:
-                secretKeyRef: {name: "{{ .Values.existingSecret }}", key: viewer-token, optional: true}
-            - name: DATAFLOW_ADMIN_TOKENS
-              valueFrom:
-                secretKeyRef: {name: "{{ .Values.existingSecret }}", key: admin-tokens, optional: true}
-            - name: DATAFLOW_WORKER_TOKENS
-              valueFrom:
-                secretKeyRef: {name: "{{ .Values.existingSecret }}", key: worker-tokens, optional: true}
             - name: DATAFLOW_UPLOAD_DIR
               value: {{ dig "uploadDir" "uploads" .Values.control | quote }}
             - name: DATAFLOW_UPLOAD_MAX_BYTES
@@ -56,12 +45,6 @@ spec:
             - name: DATAFLOW_DATABASE_URL
               valueFrom:
                 secretKeyRef: {name: "{{ .Values.existingSecret }}", key: database-url}
-            - name: DATAFLOW_ADMIN_TOKEN
-              valueFrom:
-                secretKeyRef: {name: "{{ .Values.existingSecret }}", key: admin-token}
-            - name: DATAFLOW_WORKER_TOKEN
-              valueFrom:
-                secretKeyRef: {name: "{{ .Values.existingSecret }}", key: worker-token}
           startupProbe:
             httpGet: {path: /healthz, port: http}
             periodSeconds: 2

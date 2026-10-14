@@ -5,11 +5,7 @@ from pathlib import Path
 
 if not Path(".env").exists():
     Path(".env").write_text(
-        "\n".join(
-            f"{name}={secrets.token_hex(24)}"
-            for name in ("DATAFLOW_DB_PASSWORD", "DATAFLOW_ADMIN_TOKEN", "DATAFLOW_WORKER_TOKEN")
-        )
-        + "\n"
+        "\n".join(f"{name}={secrets.token_hex(24)}" for name in ("DATAFLOW_DB_PASSWORD",)) + "\n"
     )
     Path(".env").chmod(0o600)
 root = Path("data")

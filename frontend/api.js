@@ -33,12 +33,11 @@ export function normalizeBase(value) {
 }
 
 export class API {
-  constructor(base, token) {
+  constructor(base) {
     this.base = normalizeBase(base);
-    this.token = token;
   }
   async request(path, { method = "GET", body, key } = {}) {
-    const headers = { Authorization: `Bearer ${this.token}` };
+    const headers = {};
     if (body !== undefined) headers["Content-Type"] = "application/json";
     if (key) headers["Idempotency-Key"] = key;
     let response;
@@ -82,7 +81,6 @@ export class API {
       xhr.upload.onprogress = (event) =>
         onProgress(event.lengthComputable && event.total > 0 ? event.loaded / event.total : 0);
       xhr.open("POST", this.base + "/v1/files?filename=" + encodeURIComponent(file.name));
-      xhr.setRequestHeader("Authorization", `Bearer ${this.token}`);
       xhr.setRequestHeader("Content-Type", "application/octet-stream");
       xhr.setRequestHeader("Idempotency-Key", key);
       xhr.responseType = "json";
