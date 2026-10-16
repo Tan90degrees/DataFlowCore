@@ -22,11 +22,13 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 
 
-def cpu_seconds(pid):
+def cpu_seconds(pid, root=None):
     try:
+        if root is not None and str(root).encode() not in Path(f"/proc/{pid}/cmdline").read_bytes():
+            return None  # A different PID namespace or a recycled PID is not this sample.
         fields = Path(f"/proc/{pid}/stat").read_text().rpartition(") ")[2].split()
         return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
-    except OSError, IndexError, ValueError:
+    except (OSError, IndexError, ValueError):
         return None
 
 
@@ -120,21 +122,21 @@ def idle(root, seconds):
             try:
                 health = json.loads((root / "work" / "health.json").read_text())
                 return health["registered"] and health["live_runners"] == 4
-            except OSError, ValueError:
+            except (OSError, ValueError):
                 return False
 
         wait(worker_ready)
         pids = [p.pid for p in processes] + [
             json.loads(p.read_text())["pid"] for p in (root / "work").glob("*/runner-*/state.json")
         ]
-        before_cpu = [cpu_seconds(pid) for pid in pids]
+        before_cpu = [cpu_seconds(pid, root) for pid in pids]
         before_requests = metrics(client)
         before_logs = sum(p.stat().st_size for p in root.glob("process-*.log"))
         started = time.monotonic()
         time.sleep(seconds)
         elapsed = time.monotonic() - started
         log_bytes = sum(p.stat().st_size for p in root.glob("process-*.log")) - before_logs
-        after_cpu = [cpu_seconds(pid) for pid in pids]
+        after_cpu = [cpu_seconds(pid, root) for pid in pids]
         after_requests = metrics(client)
         return {
             "seconds": elapsed,
@@ -217,8 +219,7 @@ def trial_database(dsn):
 
 
 def sample(args):
-    from dataflowcore import __version__
-    from dataflowcore.runtime import require_free_threading
+    from dataflowcore import __version__, runtime
 
     with tempfile.TemporaryDirectory(prefix="dfc-efficiency-") as root:
         value = (
@@ -231,7 +232,7 @@ def sample(args):
     files = sorted((args.source / "src" / "dataflowcore").glob("*.py"))
     return {
         "version": __version__,
-        "runtime": require_free_threading(),
+        "runtime": getattr(runtime, "check_runtime", runtime.require_free_threading)(),
         "source_digest": hashlib.sha256(
             b"".join(p.name.encode() + p.read_bytes() for p in files)
         ).hexdigest(),

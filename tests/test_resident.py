@@ -215,7 +215,7 @@ def test_unmanaged_background_thread_retires_successful_runner(cluster):
 
 
 def test_map_thread_budget_shared_by_parallel_dag_nodes(cluster):
-    cluster.worker(1, "--runner-map-workers", "2")
+    cluster.worker(1, "--runner-map-workers", "2", "--runner-dag-workers", "2")
     task = cluster.submit(
         steps=[
             {"id": name, "callable": "tests.resident_operators:parallel_map"}

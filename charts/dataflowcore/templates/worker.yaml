@@ -38,7 +38,7 @@ spec:
             - --url
             - "http://{{ .Release.Name }}-control:8080"
             - --slots
-            - "{{ .Values.worker.slots | int64 }}"
+            - {{ if eq (toString .Values.worker.slots) "auto" }}"auto"{{ else }}"{{ .Values.worker.slots | int64 }}"{{ end }}
             - --cpu
             - "{{ .Values.worker.cpu | int64 }}"
             - --memory-mb
@@ -52,7 +52,7 @@ spec:
             - --stop-grace
             - "{{ .Values.worker.stopGrace }}"
             - --runner-dag-workers
-            - "{{ .Values.worker.runnerDagWorkers | int64 }}"
+            - {{ if eq (toString .Values.worker.runnerDagWorkers) "auto" }}"auto"{{ else }}"{{ .Values.worker.runnerDagWorkers | int64 }}"{{ end }}
             - --runner-map-workers
             - "{{ .Values.worker.runnerMapWorkers | int64 }}"
             - --runner-max-tasks

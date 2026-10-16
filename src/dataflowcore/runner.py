@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .resources import ResourceBudget
 from .runner_runtime import RunnerRuntime
-from .runtime import atomic_json, child_main, require_free_threading
+from .runtime import atomic_json, check_runtime, child_main
 from .worker import LogCapture, parent_death_signal
 
 
@@ -57,7 +57,7 @@ def runner_main(
     dag_workers,
     map_workers,
     max_tasks,
-    allow_gil=False,
+    allow_gil=None,
     budget_path=None,
     io_workers=16,
     io_map_workers=16,
@@ -71,7 +71,9 @@ def runner_main(
         libc = ctypes.CDLL(None, use_errno=True)
         if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
             raise OSError(ctypes.get_errno(), "PR_SET_CHILD_SUBREAPER failed")
-    require_free_threading(allow_gil)
+    info = check_runtime(allow_gil)
+    if allow_gil is None:
+        allow_gil = info["gil_enabled"]
     root = Path(root)
     runtime = RunnerRuntime(
         dag_workers,

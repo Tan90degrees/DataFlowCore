@@ -13,6 +13,7 @@ import sysconfig
 import threading
 import time
 import traceback
+from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,12 +31,30 @@ class Cancelled(Exception):
     pass
 
 
-def require_free_threading(allow_gil=False):
+def runtime_capabilities():
     available = sysconfig.get_config_var("Py_GIL_DISABLED") == 1
     enabled = getattr(sys, "_is_gil_enabled", lambda: True)()
-    if not allow_gil and (not available or enabled):
-        raise PermanentError("Python 3.14t with GIL disabled is required, including after imports")
-    return {"python": sys.version, "free_threaded_build": available, "gil_enabled": enabled}
+    return {
+        "python": sys.version,
+        "python_version": ".".join(map(str, sys.version_info[:3])),
+        "free_threaded_build": available,
+        "gil_enabled": enabled,
+        "execution_model": "gil_process_slots" if enabled else "free_threaded_threads",
+    }
+
+
+def check_runtime(allow_gil=None):
+    info = runtime_capabilities()
+    if sys.version_info < (3, 11):  # noqa: UP036 - doctor also validates standalone source checkouts
+        raise PermanentError("Python 3.11 or newer is required")
+    if allow_gil is False and (not info["free_threaded_build"] or info["gil_enabled"]):
+        raise PermanentError("A free-threaded Python build with GIL disabled is required")
+    return info
+
+
+def require_free_threading(allow_gil=False):
+    """Compatibility helper: explicit strict validation; auto mode uses check_runtime."""
+    return check_runtime(allow_gil)
 
 
 def under_root(path, root):
@@ -219,16 +238,29 @@ class Context:
 
         pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=self.step_id)
         failed = False
+        source, queued = iter(items), deque()
         try:
-            for value in pool.map(invoke, items, buffersize=pending):
+            for _ in range(pending):
+                try:
+                    queued.append(pool.submit(invoke, next(source)))
+                except StopIteration:
+                    break
+            while queued:
+                value = queued.popleft().result()
                 self.check_cancelled()
                 yield value
+                try:
+                    queued.append(pool.submit(invoke, next(source)))
+                except StopIteration:
+                    pass
         except BaseException as exc:
             failed = not isinstance(exc, GeneratorExit)
             raise
         finally:
             # Closing early is successful only after in-flight calls stop writing.
             # Failure/cancellation remains nonblocking so the supervisor can force-stop.
+            for future in queued:
+                future.cancel()
             pool.shutdown(wait=not failed, cancel_futures=True)
 
 
@@ -241,7 +273,7 @@ def resolve_symbol(reference):
     return fn() if inspect.isclass(fn) else fn
 
 
-def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
+def run_dag(assignment, workspace, data_root, allow_gil=None, runtime=None):
     import resource
 
     before = resource.getrusage(resource.RUSAGE_SELF)
@@ -264,7 +296,9 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
     )
     output.mkdir(parents=True, exist_ok=False)
     runtime.budget.begin_attempt(runtime.owner)
-    runtime_info = require_free_threading(allow_gil)
+    if allow_gil is None:
+        allow_gil = runtime_capabilities()["gil_enabled"]
+    runtime_info = check_runtime(allow_gil)
     runtime_info["runner"] = {
         "pid": os.getpid(),
         "generation": runtime.owner,
@@ -341,11 +375,11 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
             # Import/construct only after admission: large model initialization
             # belongs to the operator's memory reservation too.
             fn = resolve_symbol(step["callable"])
-            require_free_threading(allow_gil)
+            check_runtime(allow_gil)
             value = fn(context, MappingProxyType(inputs))
             if inspect.isawaitable(value):
                 value = asyncio.run(value)
-            require_free_threading(allow_gil)
+            check_runtime(allow_gil)
             context.check_cancelled()
             encoded = canonical(value)
             if len(encoded) > 262144:
@@ -461,6 +495,7 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
         runtime_info["scheduling"] = spec.scheduling
         runtime_info["peak_resources"] = runtime.budget.attempt_peak(runtime.owner)
         runtime_info["scheduler"] = runtime.budget.snapshot()
+        runtime_info.update(check_runtime(allow_gil))
         progress.finish("SUCCEEDED")
         usage = resource.getrusage(resource.RUSAGE_SELF)
         return {
@@ -484,7 +519,7 @@ def run_dag(assignment, workspace, data_root, allow_gil=False, runtime=None):
             runtime.close()
 
 
-def child_main(assignment_path, workspace, data_root, allow_gil=False, runtime=None):
+def child_main(assignment_path, workspace, data_root, allow_gil=None, runtime=None):
     assignment = json.loads(Path(assignment_path).read_text())
     try:
         result = run_dag(assignment, workspace, data_root, allow_gil, runtime)

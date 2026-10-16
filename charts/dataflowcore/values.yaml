@@ -1,6 +1,6 @@
 image:
   repository: ghcr.io/tan90degrees/dataflowcore
-  tag: "0.8.0"
+  tag: "0.9.0"
   pullPolicy: IfNotPresent
   digest: ""
 # Existing Secret key: database-url.
@@ -11,13 +11,15 @@ leaseSeconds: 30
 worker:
   replicas: 2
   pool: default
-  runtimeVersion: "0.8.0"
-  slots: 1
+  runtimeVersion: "0.9.0"
+  # auto: one slot without GIL; with GIL, one resident file process per CPU (up to 256).
+  slots: auto
   cpu: 2
   memoryMB: 1024
   interval: 2
   stopGrace: 5
-  runnerDagWorkers: 2
+  # auto: one CPU DAG branch per slot with GIL, otherwise up to eight.
+  runnerDagWorkers: auto
   runnerMapWorkers: 4
   runnerMaxTasks: 100
   runnerIoWorkers: 16
@@ -33,7 +35,6 @@ control:
   maxUnfinished: 10000
   dbTimeoutMS: 5000
   uploadMinFreeBytes: 67108864
-  # Empty permits all installed trusted code; production should configure prefixes.
   # Relative to /dataflow, or an absolute directory inside that shared volume.
   uploadDir: uploads
   uploadMaxBytes: 268435456
@@ -48,7 +49,7 @@ console:
   enabled: false
   image:
     repository: ghcr.io/tan90degrees/dataflowcore-console
-    tag: "0.6.0"
+    tag: "0.7.0"
     pullPolicy: IfNotPresent
     digest: ""
   resources:

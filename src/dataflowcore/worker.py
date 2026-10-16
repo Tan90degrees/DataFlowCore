@@ -21,7 +21,7 @@ from .client import APIError, Client
 from .contracts import canonical
 from .observability import FailureLog
 from .resources import ResourceBudget
-from .runtime import atomic_json, require_free_threading
+from .runtime import atomic_json, check_runtime
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ class LogCapture:
                         self.file.write(self.buffer)
                         self.file.truncate()
                         self.file.flush()
-            except OSError, ValueError:
+            except (OSError, ValueError):
                 log.warning("log_capture_closed")
             finally:
                 stream.close()
@@ -119,16 +119,16 @@ class Worker:
         token,
         data_root,
         work_root,
-        slots=1,
+        slots=None,
         cpu=2,
         memory_mb=1024,
         pool="default",
         interval=2,
         stop_grace=5,
-        allow_gil=False,
+        allow_gil=None,
         name=None,
         runtime_version=__version__,
-        runner_dag_workers=8,
+        runner_dag_workers=None,
         runner_map_workers=8,
         runner_max_tasks=100,
         runner_io_workers=16,
@@ -136,6 +136,13 @@ class Worker:
         io_concurrency=32,
         resource_aging_seconds=2,
     ):
+        self.python_runtime = check_runtime(allow_gil)
+        self.cpu_dag_auto = runner_dag_workers is None or runner_dag_workers == "auto"
+        if self.cpu_dag_auto:
+            runner_dag_workers = 1 if self.python_runtime["gil_enabled"] else 8
+        self.slots_auto = slots is None or slots == "auto"
+        if self.slots_auto:
+            slots = min(cpu, 256) if self.python_runtime["gil_enabled"] else 1
         if min(slots, cpu, memory_mb) < 1 or interval <= 0 or stop_grace < 0:
             raise ValueError("invalid worker capacity/timing")
         self.client = Client(url, token, timeout=2)
@@ -148,7 +155,8 @@ class Worker:
             self.root / "resources.sqlite", cpu, memory_mb, io_concurrency, resource_aging_seconds
         )
         self.slots, self.cpu, self.memory_mb, self.pool = slots, cpu, memory_mb, pool
-        self.interval, self.stop_grace, self.allow_gil = interval, stop_grace, allow_gil
+        self.interval, self.stop_grace = interval, stop_grace
+        self.allow_gil = self.python_runtime["gil_enabled"] if allow_gil is None else allow_gil
         self.runtime_version = runtime_version
         self.running = {}
         self.running_lock = threading.Lock()
@@ -258,6 +266,8 @@ class Worker:
         ]
         if self.allow_gil:
             command.append("--allow-gil")
+        else:
+            command.append("--require-free-threading")
         capture = LogCapture(workspace / "runner.log")
         try:
             process = subprocess.Popen(
@@ -361,7 +371,7 @@ class Worker:
     def read_json(path, default=None):
         try:
             return json.loads(path.read_text())
-        except FileNotFoundError, ValueError:
+        except (FileNotFoundError, ValueError):
             return default
 
     def clean(self, aid, running):
@@ -559,7 +569,7 @@ class Worker:
                     self.stop_task(running, invalid=True)
                 else:
                     log.warning("attempt_request_failed status=%s attempt=%s", exc.status, aid)
-            except OSError, TimeoutError:
+            except (OSError, TimeoutError):
                 log.warning("attempt_request_unavailable attempt=%s", aid)
         # Reuse slots completed in this tick, without waiting a full heartbeat interval.
         if len(self.running) < original_active and not empty_queue:
@@ -610,9 +620,13 @@ class Worker:
             try:
                 pages = int(Path(f"/proc/{pid}/statm").read_text().split()[1])
                 rss.append(pages * os.sysconf("SC_PAGE_SIZE") / 1048576)
-            except OSError, IndexError, ValueError:
+            except (OSError, IndexError, ValueError):
                 pass
         return {
+            **check_runtime(self.allow_gil),
+            "slots_auto": self.slots_auto,
+            "cpu_dag_workers_per_slot": self.runner_dag_workers,
+            "cpu_dag_workers_auto": self.cpu_dag_auto,
             "processes": len(pids),
             "runner_processes": len(pids) - 1,
             "sampled_rss_mb": sum(rss) if len(rss) == len(pids) else None,
@@ -620,7 +634,15 @@ class Worker:
         }
 
     def run(self):
-        require_free_threading(self.allow_gil)
+        check_runtime(self.allow_gil)
+        log.info(
+            "python_runtime version=%s gil_enabled=%s model=%s slots=%s slots_auto=%s",
+            self.python_runtime["python_version"],
+            self.python_runtime["gil_enabled"],
+            self.python_runtime["execution_model"],
+            self.slots,
+            self.slots_auto,
+        )
 
         def stop(*_):
             self.stopped.set()

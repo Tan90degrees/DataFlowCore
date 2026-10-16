@@ -13,6 +13,7 @@ import pytest
 
 from dataflowcore.api import Server
 from dataflowcore.contracts import Invalid
+from dataflowcore.runtime import runtime_capabilities
 from dataflowcore.uploads import Uploads
 from tests.test_e2e import until
 
@@ -336,7 +337,7 @@ def test_uploaded_file_executes_on_real_worker_and_survives_controller_restart(
         timeout=25,
     )
     assert finished["result"]["steps"]["stats"]["words"] == 400
-    assert finished["result"]["runtime"]["gil_enabled"] is False
+    assert finished["result"]["runtime"]["gil_enabled"] is runtime_capabilities()["gil_enabled"]
     cluster.control.kill()
     cluster.control.wait(timeout=5)
     cluster.control = cluster.start_control(*control_args)

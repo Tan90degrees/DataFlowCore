@@ -9,8 +9,39 @@ from pathlib import Path
 
 from . import __version__
 from .client import Client
-from .runtime import child_main, require_free_threading
+from .runtime import check_runtime, child_main
 from .uploads import DEFAULT_DIR
+
+
+def runtime_options(command):
+    mode = command.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--require-free-threading",
+        dest="allow_gil",
+        action="store_false",
+        help="reject a GIL-enabled Python runtime, including after operator imports",
+    )
+    mode.add_argument("--allow-gil", action="store_true", help=argparse.SUPPRESS)
+    command.set_defaults(allow_gil=None)
+
+
+def slots_value(value):
+    if value == "auto":
+        return None
+    try:
+        count = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("slots must be auto or a positive integer") from exc
+    if count < 1:
+        raise argparse.ArgumentTypeError("slots must be auto or a positive integer")
+    return count
+
+
+def pool_width(value):
+    count = slots_value(value)
+    if count is not None and count > 256:
+        raise argparse.ArgumentTypeError("pool width must be auto or an integer in 1..256")
+    return count
 
 
 def parser():
@@ -48,7 +79,7 @@ def parser():
         help="comma-separated exact browser origins; empty disables cross-origin access",
     )
     control.add_argument("--insecure", action="store_true", help=argparse.SUPPRESS)
-    control.add_argument("--allow-gil", action="store_true", help="development only")
+    runtime_options(control)
     control.add_argument(
         "--max-unfinished", type=int, default=int(os.getenv("DATAFLOW_MAX_UNFINISHED", "10000"))
     )
@@ -67,15 +98,25 @@ def parser():
     worker.add_argument("--url", default=os.getenv("DATAFLOW_URL", "http://127.0.0.1:8080"))
     worker.add_argument("--data-root", default=os.getenv("DATAFLOW_DATA_ROOT", "."))
     worker.add_argument("--work-root", default=os.getenv("DATAFLOW_WORK_ROOT", ".dataflow-worker"))
-    worker.add_argument("--slots", type=int, default=1)
+    worker.add_argument(
+        "--slots",
+        type=slots_value,
+        default=None,
+        help="resident file processes; auto uses --cpu with GIL (up to 256), otherwise 1",
+    )
     worker.add_argument("--cpu", type=int, default=2)
     worker.add_argument("--memory-mb", type=int, default=1024)
     worker.add_argument("--pool", default="default")
     worker.add_argument("--interval", type=float, default=2)
     worker.add_argument("--stop-grace", type=float, default=5)
-    worker.add_argument("--allow-gil", action="store_true", help="development only")
+    runtime_options(worker)
     worker.add_argument("--runtime-version", default=__version__)
-    worker.add_argument("--runner-dag-workers", type=int, default=8)
+    worker.add_argument(
+        "--runner-dag-workers",
+        type=pool_width,
+        default=None,
+        help="CPU DAG pool width; auto uses 1 with GIL, otherwise 8",
+    )
     worker.add_argument("--runner-map-workers", type=int, default=8)
     worker.add_argument("--runner-max-tasks", type=int, default=100)
     worker.add_argument("--runner-io-workers", type=int, default=16)
@@ -95,7 +136,9 @@ def parser():
             sub.add_argument("--pool")
             sub.add_argument("--limit", type=int, default=100)
             sub.add_argument("--cursor")
-    commands.add_parser("doctor", help="verify actual free-threaded runtime")
+    runtime_options(
+        commands.add_parser("doctor", help="inspect and validate Python execution mode")
+    )
     migrate = commands.add_parser("migrate")
     migrate.add_argument(
         "--dsn", default=os.getenv("DATAFLOW_DATABASE_URL", "sqlite:///dataflow.db")
@@ -120,7 +163,7 @@ def parser():
     run.add_argument("--workspace", required=True)
     run.add_argument("--data-root", required=True)
     run.add_argument("--parent-pid", type=int, required=True)
-    run.add_argument("--allow-gil", action="store_true")
+    runtime_options(run)
     runner = commands.add_parser("_runner", help=argparse.SUPPRESS)
     runner.add_argument("--workspace", required=True)
     runner.add_argument("--data-root", required=True)
@@ -128,7 +171,7 @@ def parser():
     runner.add_argument("--dag-workers", type=int, required=True)
     runner.add_argument("--map-workers", type=int, required=True)
     runner.add_argument("--max-tasks", type=int, required=True)
-    runner.add_argument("--allow-gil", action="store_true")
+    runtime_options(runner)
     runner.add_argument("--budget-path")
     runner.add_argument("--io-workers", type=int, default=16)
     runner.add_argument("--io-map-workers", type=int, default=16)
@@ -151,7 +194,7 @@ def main():
     if args.command == "control":
         from .api import serve
 
-        require_free_threading(args.allow_gil)
+        check_runtime(args.allow_gil)
         serve(
             args.dsn,
             args.host,
@@ -219,7 +262,7 @@ def main():
         parent_death_signal(args.parent_pid)
         child_main(args.assignment, args.workspace, args.data_root, args.allow_gil)
     elif args.command == "doctor":
-        print(json.dumps(require_free_threading(), indent=2))
+        print(json.dumps(check_runtime(args.allow_gil), indent=2))
     elif args.command == "migrate":
         from .store import Store
 

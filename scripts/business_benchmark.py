@@ -20,7 +20,7 @@ from dataflowcore import __version__
 from dataflowcore.client import APIError, Client
 from dataflowcore.examples.embedding_fixture import FixtureServer
 from dataflowcore.examples.ingestion import pipeline
-from dataflowcore.runtime import file_hash, require_free_threading
+from dataflowcore.runtime import check_runtime, file_hash
 
 
 def percentile(values, p):
@@ -33,7 +33,7 @@ def wait(check, timeout=120):
         try:
             if value := check():
                 return value
-        except OSError, APIError:
+        except (OSError, APIError):
             pass
         time.sleep(0.05)
     raise TimeoutError("benchmark condition timed out")
@@ -183,7 +183,7 @@ def run(
                     )
                     if line is not None:
                         peak_control_rss = max(peak_control_rss, int(line.split()[1]) * 1024)
-            except OSError, ValueError:
+            except (OSError, ValueError):
                 pass
             time.sleep(0.05)
         elapsed = time.monotonic() - started
@@ -194,7 +194,8 @@ def run(
         tasks = list(final.values())
         queue = [(t["attempts"][0]["started_at"] - t["created_at"]) * 1000 for t in tasks]
         runtime = [(t["updated_at"] - t["attempts"][0]["started_at"]) * 1000 for t in tasks]
-        assert all(t["result"]["runtime"]["gil_enabled"] is False for t in tasks)
+        expected = check_runtime()
+        assert all(t["result"]["runtime"]["gil_enabled"] is expected["gil_enabled"] for t in tasks)
         assert all(t["attempt_count"] == 1 for t in tasks), (
             "unexpected retry in fault-free benchmark"
         )
@@ -228,7 +229,7 @@ def run(
             for pid in re.findall(r"task_started .*pid=(\d+)", path.read_text())
         }
         result = {
-            "runtime": require_free_threading(),
+            "runtime": check_runtime(),
             "package_version": __version__,
             "run_id": run_id,
             "measured_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

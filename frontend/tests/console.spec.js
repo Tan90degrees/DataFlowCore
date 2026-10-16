@@ -6,6 +6,13 @@ const input = path.join(process.env.DATAFLOW_CONSOLE_TEST_ROOT, "input.txt");
 const base = "http://127.0.0.1:8086";
 const headers = { Authorization: `Bearer ${"a".repeat(32)}` };
 
+async function expectRuntime(request, runtime) {
+  // The browser fixture starts controller and workers with the same interpreter.
+  const expected = (await (await request.get(base + "/version")).json()).runtime;
+  expect(runtime.gil_enabled).toBe(expected.gil_enabled);
+  expect(runtime.execution_model).toBe(expected.execution_model);
+}
+
 async function connect(page) {
   await page.goto("/");
   await page.getByRole("button", { name: /配置 API 连接/ }).click();
@@ -92,7 +99,7 @@ test("token-free connection, cursor pagination, filters, DAG edits, cycle reject
   await expect(page.locator("#task-stop-hint")).toContainText("已完成");
   expect(task.result.steps.count.words).toBe(400);
   expect(task.spec.steps.at(-1).id).toBe("finish");
-  expect(task.result.runtime.gil_enabled).toBe(false);
+  await expectRuntime(request, task.result.runtime);
   await page.getByRole("button", { name: "事件", exact: true }).click();
   await expect(page.locator(".event")).not.toHaveCount(0);
   await page.getByRole("button", { name: "结果", exact: true }).click();
@@ -227,7 +234,7 @@ test("local upload through /api preserves edits, confirms lost response and exec
   expect(finished.spec.input_sha256).toBe(uploaded.input_sha256);
   expect(finished.spec.parameters.business).toBe("前端上传");
   expect(finished.result.steps.stats.words).toBe(400);
-  expect(finished.result.runtime.gil_enabled).toBe(false);
+  await expectRuntime(request, finished.result.runtime);
 });
 
 test("per-operator resource editing, IO bypass and resource-wait cancellation", async ({ page, request }) => {

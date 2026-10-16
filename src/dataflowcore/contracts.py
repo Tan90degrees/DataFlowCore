@@ -1,5 +1,7 @@
 """JSON-only contracts: business code is installed in an immutable worker image."""
 
+from __future__ import annotations
+
 import hashlib
 import json
 import math

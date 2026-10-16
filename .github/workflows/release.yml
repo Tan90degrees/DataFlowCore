@@ -47,6 +47,7 @@ jobs:
           image = 'ghcr.io/' + os.environ['GITHUB_REPOSITORY'].lower()
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'core={image}:{version}\nconsole={image}-console:{console}\n')
+              output.write(f'core_py311={image}:{version}-py311\n')
           PY
       - name: Reserve a draft release without replacing a published version
         env:
@@ -76,6 +77,15 @@ jobs:
           sbom: true
           provenance: mode=max
       - uses: docker/build-push-action@v6
+        id: core_py311
+        with:
+          context: .
+          build-args: PYTHON_VERSION=3.11.6
+          push: true
+          tags: ${{ steps.version.outputs.core_py311 }}
+          sbom: true
+          provenance: mode=max
+      - uses: docker/build-push-action@v6
         id: console
         with:
           context: frontend
@@ -92,13 +102,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CORE_IMAGE: ${{ steps.version.outputs.core }}
           CORE_DIGEST: ${{ steps.core.outputs.digest }}
+          CORE_PY311_IMAGE: ${{ steps.version.outputs.core_py311 }}
+          CORE_PY311_DIGEST: ${{ steps.core_py311.outputs.digest }}
           CONSOLE_IMAGE: ${{ steps.version.outputs.console }}
           CONSOLE_DIGEST: ${{ steps.console.outputs.digest }}
         run: |
           python3 - <<'PY'
           import json, os
           from pathlib import Path
-          result = {k.lower(): os.environ[k] for k in ('CORE_IMAGE','CORE_DIGEST','CONSOLE_IMAGE','CONSOLE_DIGEST')}
+          result = {k.lower(): os.environ[k] for k in ('CORE_IMAGE','CORE_DIGEST','CORE_PY311_IMAGE','CORE_PY311_DIGEST','CONSOLE_IMAGE','CONSOLE_DIGEST')}
           Path('dist/images.json').write_text(json.dumps(result, indent=2) + '\n')
           PY
           python3 - <<'PY'
