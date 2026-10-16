@@ -11,6 +11,7 @@ from urllib.parse import urlencode
 
 from dataflowcore.client import APIError, Client
 from dataflowcore.examples.ingestion import fixture_vector, pipeline, records
+from dataflowcore.runtime import runtime_capabilities
 
 client = Client("http://127.0.0.1:18080", "", timeout=3)
 
@@ -26,7 +27,7 @@ def until(check, seconds=120):
             value = check()
             if value:
                 return value
-        except OSError, APIError:
+        except (OSError, APIError):
             pass
         time.sleep(0.5)
     raise AssertionError("acceptance condition timed out")
@@ -69,7 +70,7 @@ def verify_business(task):
         ).fetchone()[0]
     assert count == receipt["chunks"] == len(vectors)
     assert task["attempts"][-1]["progress"]["fraction"] == 1
-    assert result["runtime"]["gil_enabled"] is False
+    assert result["runtime"]["gil_enabled"] is runtime_capabilities()["gil_enabled"]
     assert task["scheduling"] == "operator"
     assert task["spec"]["steps"][3]["workload"] == "io"
     assert result["runtime"]["scheduler"]["peak_cpu"] <= 2
@@ -115,7 +116,7 @@ name = next(
 kubectl("delete", "pod", name, "--grace-period=0", "--force", "--wait=false")
 finished = state(task["id"], "SUCCEEDED")
 assert [a["state"] for a in finished["attempts"]] == ["LOST", "SUCCEEDED"]
-assert finished["result"]["runtime"]["gil_enabled"] is False
+assert finished["result"]["runtime"]["gil_enabled"] is runtime_capabilities()["gil_enabled"]
 assert finished["attempts"][1]["worker_session"] != session
 verify_business(finished)
 evidence["pod_fault"] = finished
@@ -158,7 +159,7 @@ try:
     finished = state(queued["id"], "SUCCEEDED")
     verify_business(finished)
     evidence["drain_and_replace"] = finished
-    # Pin consecutive files to one single-slot executor and verify warm reuse.
+    # Pin consecutive files to one executor and verify warm resident-slot reuse.
     live = [w for w in client.request("GET", "/v1/workers")["workers"] if w["online"]]
     selected = finished["attempts"][-1]["worker_session"]
     for worker in live:
@@ -180,5 +181,5 @@ finally:
 Path(".e2e/evidence.json").write_text(json.dumps(evidence, indent=2))
 print(
     "Kubernetes business acceptance passed: artifacts, idempotent index, Pod recovery, "
-    "control restart, cancellation, drain, resident PID reuse, no GIL"
+    "control restart, cancellation, drain, resident PID reuse, verified Python/GIL mode"
 )

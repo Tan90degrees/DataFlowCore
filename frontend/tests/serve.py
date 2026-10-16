@@ -76,7 +76,7 @@ for _ in range(100):
     try:
         client.request("GET", "/readyz")
         break
-    except OSError, APIError:
+    except (OSError, APIError):
         time.sleep(0.1)
 else:
     raise RuntimeError("controller did not start")

@@ -52,6 +52,37 @@ def crash_once(context, inputs):
     return {"pid": os.getpid()}
 
 
+def cpu_work(context, inputs):
+    shared = context.resource("cpu-work", lambda: Resource(context.input_path.parent))
+    shared.calls += 1
+    started, before = time.monotonic(), time.thread_time()
+    required = context.parameters.get("barrier", 0)
+    if required:
+        barrier = context.input_path.parent / "cpu-ready"
+        barrier.mkdir(exist_ok=True)
+        (barrier / str(os.getpid())).touch()
+        deadline = time.monotonic() + 10
+        while len(list(barrier.iterdir())) < required:
+            context.check_cancelled()
+            if time.monotonic() >= deadline:
+                raise TimeoutError("CPU process slots did not reach the test barrier")
+            time.sleep(0.01)
+    value = 0
+    for index in range(context.parameters.get("rounds", 1000000)):
+        value = (value * 31 + index) % 1000000007
+        if index % 16384 == 0:
+            context.check_cancelled()
+    return {
+        "pid": os.getpid(),
+        "resource": shared.identity,
+        "calls": shared.calls,
+        "checksum": value,
+        "started": started,
+        "finished": time.monotonic(),
+        "cpu_seconds": time.thread_time() - before,
+    }
+
+
 def leftover(context, inputs):
     process = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)"],

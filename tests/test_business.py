@@ -12,6 +12,7 @@ import pytest
 
 from dataflowcore.examples.embedding_fixture import FixtureServer
 from dataflowcore.examples.ingestion import fixture_vector, pipeline, records
+from dataflowcore.runtime import runtime_capabilities
 from tests.test_e2e import until
 
 
@@ -52,7 +53,7 @@ def index_rows(root):
 def verify(task, root):
     assert task["state"] == "SUCCEEDED", task["error"]
     result = task["result"]
-    assert result["runtime"]["gil_enabled"] is False
+    assert result["runtime"]["gil_enabled"] is runtime_capabilities()["gil_enabled"]
     assert result["usage"]["peak_rss_bytes"] > 0
     assert len(result["files"]) == 4
     for manifest in result["files"]:

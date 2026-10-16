@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from dataflowcore.client import APIError, Client
+from dataflowcore.runtime import runtime_capabilities
 
 
 def until(check, timeout=20):
@@ -21,7 +22,7 @@ def until(check, timeout=20):
             result = check()
             if result:
                 return result
-        except OSError, APIError:
+        except (OSError, APIError):
             pass
         time.sleep(0.05)
     raise AssertionError("condition did not become true")
@@ -141,8 +142,10 @@ def test_actual_file_dag_output_and_gil(cluster):
     )
     final = cluster.state(task["id"], "SUCCEEDED")
     assert final["result"]["steps"]["count"]["words"] == 3
-    assert final["result"]["runtime"]["gil_enabled"] is False
-    assert final["result"]["runtime"]["free_threaded_build"] is True
+    expected = runtime_capabilities()
+    assert final["result"]["runtime"]["gil_enabled"] is expected["gil_enabled"]
+    assert final["result"]["runtime"]["free_threaded_build"] is expected["free_threaded_build"]
+    assert final["result"]["runtime"]["execution_model"] == expected["execution_model"]
     assert Path(final["result"]["output_dir"], "write.json").is_file()
     assert final["attempts"][0]["progress"]["completed_steps"] == 3
     assert len(final["attempts"]) == 1
@@ -305,7 +308,7 @@ def test_failed_dag_stops_uncooperative_sibling_and_releases_slot(cluster):
     operator = cluster.root / "sibling.py"
     operator.write_text("import time\ndef run(context, inputs):\n    time.sleep(60)\n")
     cluster.env["PYTHONPATH"] += os.pathsep + str(cluster.root)
-    cluster.worker()
+    cluster.worker(1, "--runner-dag-workers", "2")
     task = cluster.submit(
         steps=[
             {"id": "stuck", "callable": "sibling:run"},

@@ -54,13 +54,18 @@ class TrackedPool:
 class RunnerRuntime:
     def __init__(
         self,
-        dag_workers=8,
+        dag_workers=None,
         map_workers=8,
         io_workers=16,
         io_map_workers=16,
         budget=None,
         owner="local",
     ):
+        if dag_workers is None:
+            # Imported lazily because runtime owns the policy and imports this class.
+            from .runtime import runtime_capabilities
+
+            dag_workers = 1 if runtime_capabilities()["gil_enabled"] else 8
         integer(dag_workers, "runner dag workers", 1, 256)
         integer(map_workers, "runner map workers", 1, 256)
         integer(io_workers, "runner io workers", 1, 256)

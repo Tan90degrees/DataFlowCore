@@ -30,7 +30,7 @@ kubectl logs <worker-pod> --tail=200
 
 ## 验收
 
-- 真实3.14t子进程完成DAG并报告gil_enabled=false。
+- 真实3.11.6和3.14t子进程完成DAG，分别报告gil_enabled=true/false及实际执行模型。
 - 并发领取没有重复有效分配；CPU/内存/槽位准入有效。
 - supervisor被杀后任务子进程终止，自动新Attempt完成。
 - 管控重启后既有执行继续或到期后重试。

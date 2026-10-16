@@ -13,7 +13,10 @@ services:
       timeout: 2s
       retries: 30
   control:
-    build: .
+    build:
+      context: .
+      args:
+        PYTHON_VERSION: ${DATAFLOW_PYTHON_VERSION:-3.14.8t}
     image: dataflowcore:local
     environment:
       DATAFLOW_DATABASE_URL: postgresql://dataflow:${DATAFLOW_DB_PASSWORD}@postgres:5432/dataflow
@@ -36,7 +39,7 @@ services:
     restart: unless-stopped
   worker:
     image: dataflowcore:local
-    command: [worker, --url, "http://control:8080", --slots, "2", --cpu, "4", --memory-mb, "2048", --runner-dag-workers, "2", --runner-map-workers, "4", --runner-io-workers, "16", --runner-io-map-workers, "16", --io-concurrency, "32", --runner-max-tasks, "100"]
+    command: [worker, --url, "http://control:8080", --slots, "2", --cpu, "4", --memory-mb, "2048", --runner-dag-workers, "auto", --runner-map-workers, "4", --runner-io-workers, "16", --runner-io-map-workers, "16", --io-concurrency, "32", --runner-max-tasks, "100"]
     volumes:
       - ./data:/dataflow
     depends_on:

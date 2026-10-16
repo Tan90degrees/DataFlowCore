@@ -25,7 +25,7 @@ const waitReasons = {
 };
 const waitText = (reasons) => (reasons || []).map(reason => waitReasons[reason] || reason).join("、");
 let api = null,
-  version = "0.8.0",
+  version = "0.9.0",
   epoch = 0,
   refreshing = false,
   connected = false;
@@ -939,6 +939,11 @@ function renderWorkers() {
               ["文件运行 / 空闲槽位", `${worker.active_tasks ?? "—"} / ${worker.free_slots ?? "—"}`],
               ["采样 RSS（进程求和）", worker.runtime?.sampled_rss_mb == null ? "当前环境未提供" : `${worker.runtime.sampled_rss_mb.toFixed(1)} MiB`],
               ["常驻执行进程", worker.runtime?.runner_processes ?? "—"],
+              ["Python / 执行模型", worker.runtime?.execution_model
+                ? `${worker.runtime.python_version} / ${worker.runtime.execution_model === "gil_process_slots" ? "有 GIL，文件进程并行" : "无 GIL，槽位内线程并行"}`
+                : "—"],
+              ["槽位选择", worker.runtime?.slots_auto == null ? "—" : worker.runtime.slots_auto ? "自动" : "部署指定"],
+              ["每槽位 CPU 分支并发", worker.runtime?.cpu_dag_workers_per_slot ?? "—"],
               ["快照年龄", seconds(worker.telemetry_age_seconds)],
               ["当前资源预留", worker.scheduler ? `CPU ${worker.scheduler.cpu} / ${worker.scheduler.memory_mb} MiB` : "当前无资源快照"],
               ["算子运行 / 等待", worker.scheduler ? `${worker.scheduler.active_operators} / ${worker.scheduler.waiting_operators}` : "—"],

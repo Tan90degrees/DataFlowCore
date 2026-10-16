@@ -30,7 +30,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             try:
                 self.wfile.write(result)
-            except BrokenPipeError, ConnectionResetError:
+            except (BrokenPipeError, ConnectionResetError):
                 pass
         finally:
             with self.server.lock:

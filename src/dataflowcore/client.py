@@ -36,7 +36,7 @@ class Client:
             try:
                 value = json.load(exc)
                 message = value.get("error", str(exc))
-            except ValueError, AttributeError:
+            except (ValueError, AttributeError):
                 message = str(exc)
                 value = {}
             raise APIError(
@@ -103,7 +103,7 @@ class Client:
                     if exc.status not in (429, 500, 502, 503, 504):
                         raise
                     break
-                except OSError, TimeoutError:
+                except (OSError, TimeoutError):
                     break
                 if page["missing"]:
                     raise APIError(404, f"unknown tasks: {page['missing']}")

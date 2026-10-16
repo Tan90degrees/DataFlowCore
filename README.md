@@ -1,15 +1,17 @@
 # DataFlowCore
 
 一个文件一个任务。一个执行尝试的完整 DAG 始终在同一个执行器上运行。
-单个管控服务管理多个执行器，执行器内部使用 Python **3.14t** 无 GIL 线程并行。
+单个管控服务管理多个执行器，支持 Python **3.11+** 与 **3.14t**。
+有 GIL 时用常驻文件进程实现多核吞吐，无 GIL 时同时支持槽位内线程并行。
 Pod 或节点故障后自动从头重试，暂不支持断点续跑。没有 Ray / KubeRay 依赖。
 
 ## 已实现
 
-0.8.0 增加大 DAG 增量推进、算子一次入队、批量释放和进度合并，减少快速算子的
-调度与磁盘开销。任务和执行器页可定位 CPU、内存、IO、线程池及老请求保护的等待。
-延续批量心跳/续租/领取、PostgreSQL 连接复用、常驻槽位和跨进程资源唤醒。
-修复闲置池线程被误认为遗留线程而回收槽位的问题，回收日志提供具体原因。
+0.9.0 正式支持 Python 3.11.6：自动识别 GIL、固定常驻槽位、复用线程和缓存，
+保持事件驱动、批量通信、算子级预算和低底噪。算子接口和 DAG 定义无需按版本拆分。
+默认 slots=auto：有 GIL 时按执行器 CPU 预算预建槽位（最多256），无 GIL 时为1；
+显式 --slots 保留部署指定数量。每槽位 CPU 分支池默认随 GIL 选择1或8，IO 独立并发。
+详见 [Python 双运行时](docs/python-runtimes.md)。
 组件不提供权限、身份分级、管理审计或算子白名单，入口由宿主产品接入。
 保留幂等、租约隔离、停止、整文件恢复、维护、背压和业务执行事件。
 详见 [内部组件验收与边界](docs/production-gaps.md)、[生产运维](docs/production-operations.md)、
@@ -25,7 +27,7 @@ Pod 或节点故障后自动从头重试，暂不支持断点续跑。没有 Ray
 - 运行环境、执行器池、槽位与 CPU/内存预算匹配。
 - 算子级 CPU/内存准入，执行器内所有槽位共享预算；CPU/IO 算子与页块使用独立固定池。
 - 输入校验和 SHA256 固定、输出 manifest、请求与任务身份关联诊断。
-- Python 3.14t 容器、Docker Compose、Helm、真实子进程与 K8S 故障验收。
+- Python 3.11.6 / 3.14t 容器、Docker Compose、Helm、真实子进程与 K8S 故障验收。
 - 流式有界的页/块线程并行、批量状态查询、游标分页、执行器排空。
 - 完整文档入库业务案例、故障注入与可复现性能基准。
 
@@ -34,7 +36,8 @@ Pod 或节点故障后自动从头重试，暂不支持断点续跑。没有 Ray
 
 ## 最快启动：Docker Compose
 
-需要 Docker Compose。首次构建安装 CPython 3.14.8t，需要联网；业务运行不动态安装依赖。
+需要 Docker Compose。默认构建安装 CPython 3.14.8t，也可构建3.11.6镜像。
+构建需要联网，业务运行不动态安装依赖。
 
 ```bash
 git clone https://github.com/Tan90degrees/DataFlowCore.git
@@ -67,6 +70,7 @@ Compose PostgreSQL 使用持久卷；保留历史时不要执行 `docker compose
 ```bash
 uv python install 3.14t
 uv venv --python 3.14t .venv
+# 普通有 GIL 的版本可替换为：uv venv --python 3.11.6 .venv
 source .venv/bin/activate
 uv pip install -e '.[dev,postgres]'
 dataflow doctor
@@ -76,8 +80,7 @@ pytest -q
 ```
 
 PostgreSQL 驱动使用纯 Python psycopg + 系统 libpq，Debian/Ubuntu 安装 `libpq5`。
-不安装 `psycopg[binary]`，项目使用 CPython cp314t ABI。
-CI 验证 psycopg 导入后 GIL 仍关闭。
+默认统一使用纯 Python 驱动兼容两类运行时；无 GIL 构建还验证依赖导入后 GIL 仍关闭。
 
 本机演示可使用 SQLite（单机开发专用），两个终端分别运行：
 
@@ -106,7 +109,8 @@ dataflow workers
 ```
 
 wait 成功返回0，失败/取消返回1。手动重试创建新任务，原记录保留；自动故障重试
-在原任务下追加执行尝试。`--allow-gil` 仅供开发；旧 `--insecure` 接受但已无鉴权开关作用。
+在原任务下追加执行尝试。默认自动识别运行时，3.11无需--allow-gil；
+--require-free-threading可强制拒绝有GIL环境。旧--allow-gil及--insecure作为兼容参数接受。
 
 ## 业务 DAG
 
@@ -173,7 +177,7 @@ SDK 的 `statuses(ids)` 每次最多查询100个任务，`wait_many(ids)` 自动
 
 参见 [部署](docs/deployment.md)、[可靠性](docs/architecture.md)、
 [API](docs/api.md)、[操作手册](docs/operations.md)。
-CI 使用真实 PostgreSQL、3.14t及容器；K8S 验收实际删除执行器 Pod、重启管控、
+CI 使用真实 PostgreSQL，分别验证3.11.6和3.14t；K8S 验收实际删除执行器 Pod、重启管控、
 取消运行任务，上传 e2e-evidence。具备 Docker/kind/kubectl/Helm 的环境可运行：
 
 ```bash

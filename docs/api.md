@@ -4,10 +4,12 @@
 
 `GET /v1/files/limits` 同时返回解析后的绝对 `upload_dir`。目录由管控启动时的 `--upload-dir`/`DATAFLOW_UPLOAD_DIR` 指定（默认 data-root 下的 `uploads`），POST 上传沿用此配置。
 
-0.8.0 API 作为宿主产品的内部接口，不要求 Bearer 凭证，不提供角色、审计或算子白名单。
+0.9.0 API 作为宿主产品的内部接口，不要求 Bearer 凭证，不提供角色、审计或算子白名单。
 响应含 X-Request-ID。429/维护 503 含 Retry-After: 5 与 code；用原幂等键稍后重试。
 任务详情默认只展开当前 Attempt；历史为摘要，使用 ?attempt={attempt-id} 按需展开。
 GET /healthz、/readyz、/version 为探针；/metrics 为 Prometheus 指标。
+GET /version 另有 runtime，报告该管控进程实际Python版本、GIL状态和执行模型；
+执行器状态以每个worker.runtime为准，不假定所有执行器使用相同解释器。
 
 | 方法 | 路径 | 功能 |
 |---|---|---|

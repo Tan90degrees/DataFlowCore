@@ -1,8 +1,9 @@
 # 独立前端管控台
 
-前端 0.6.0 只填写 API 地址即可连接，宿主产品负责其入口。
+前端 0.7.0 只填写 API 地址即可连接，宿主产品负责其入口。
 运维页可暂停/恢复任务接入，查看额度、活跃执行/上传、静止状态和数据库连接池。
 执行器页展示文件槽位、资源预留、等待瓶颈、老请求保护需求、快照年龄和实际采样 RSS。
+同时显示实际Python版本、有无GIL、执行模型和槽位是否自动选择。
 任务详情直接显示等待 CPU/内存预算、IO 配额、本槽位线程池或老请求资源保护。
 
 0.6.0 的「节点配置」可设置 CPU / IO 类型、CPU 和内存 MiB；按算子自动调度。
@@ -27,7 +28,7 @@ docker compose up --build -d
 先启动已有管控 API，再启动独立前端：
 
 ```bash
-# 管控节点和执行器仍需 Python 3.14t 及共享目录
+# 管控节点和执行器需 Python 3.11+ 或 3.14t，以及共享目录
 dataflow control \
   --host 127.0.0.1 --data-root /absolute/shared/data
 # 另一终端
@@ -156,7 +157,7 @@ helm upgrade --install dataflowcore charts/dataflowcore \
 ## 验收
 
 ```bash
-# Python 3.14t，实际关闭 GIL
+# Python 3.11.6 或 3.14t，分别验证真实GIL状态
 python -m pip install -e '.[dev]'
 pytest -q tests/test_console_api.py
 cd frontend
@@ -166,7 +167,7 @@ npx playwright install --with-deps chromium
 DATAFLOW_TEST_PYTHON=python npm test
 ```
 
-浏览器测试启动独立 Node 开发服务器、真实管控节点和真实 free-threaded 执行器，覆盖实际 CORS 连接及默认 `/api` 代理。覆盖无凭证接入、筛选/分页、节点编辑与环拒绝、草稿/导出、文件 DAG 执行、六节点文档入库、响应丢失的幂等提交、运行中取消、重试、失败日志、XSS 字符串安全渲染、排空、移动端及网络异常/宿主入口拒绝。测试中只有故障注入拦截请求；成功业务响应来自真实 API。Node 开发服务器测试另行验证静态资源、可选上游请求头及请求体转发、后端不可达、端口冲突、进程持续运行和停止。
+浏览器测试启动独立 Node 开发服务器、真实管控节点和真实执行器，覆盖实际 CORS 连接及默认 `/api` 代理。覆盖无凭证接入、筛选/分页、节点编辑与环拒绝、草稿/导出、文件 DAG 执行、六节点文档入库、响应丢失的幂等提交、运行中取消、重试、失败日志、XSS 字符串安全渲染、排空、移动端及网络异常/宿主入口拒绝。测试中只有故障注入拦截请求；成功业务响应来自真实 API。Node 开发服务器测试另行验证静态资源、可选上游请求头及请求体转发、后端不可达、端口冲突、进程持续运行和停止。
 
 CI 分别运行 Python/PostgreSQL 验证、浏览器验证和 Kubernetes 故障恢复验证，上传前端截图、失败 trace、浏览器报告。独立前端镜像构建与 K8S 前端 Service 的页面/API 代理验证也进入 CI。
 

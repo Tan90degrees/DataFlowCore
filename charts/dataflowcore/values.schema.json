@@ -6,8 +6,18 @@
       "type": "object",
       "properties": {
         "slots": {
-          "type": "integer",
-          "minimum": 1
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "enum": [
+                "auto"
+              ]
+            }
+          ]
         },
         "cpu": {
           "type": "integer",
@@ -20,9 +30,19 @@
           "maximum": 1048576
         },
         "runnerDagWorkers": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 256
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 256
+            },
+            {
+              "type": "string",
+              "enum": [
+                "auto"
+              ]
+            }
+          ]
         },
         "runnerMapWorkers": {
           "type": "integer",

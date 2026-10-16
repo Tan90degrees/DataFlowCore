@@ -16,6 +16,10 @@ jobs:
   tests:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11.6', '3.14t']
     services:
       postgres:
         image: postgres:17-bookworm
@@ -36,12 +40,14 @@ jobs:
           ref: ${{ inputs.ref || github.ref }}
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.14t'
+          python-version: ${{ matrix.python }}
       - run: sudo apt-get update && sudo apt-get install -y libpq5
       - run: python -m pip install -c constraints/production.txt -e '.[postgres,dev]'
       - run: ruff check . && ruff format --check .
       - run: dataflow doctor
-      - run: python -c 'import psycopg; import sys; assert not sys._is_gil_enabled()'
+      - run: python -c 'import psycopg; from dataflowcore.runtime import check_runtime; print(check_runtime())'
+      - if: matrix.python == '3.14t'
+        run: dataflow doctor --require-free-threading
       - run: pytest -q
       - name: PostgreSQL business benchmark
         run: |
@@ -49,35 +55,44 @@ jobs:
           python scripts/business_benchmark.py --files 120 --workers 2 --slots 4 --chars 2048 --dsn "$DATAFLOW_TEST_DATABASE_URL" --output .e2e/business-batch-120.json
           python scripts/benchmark_operator_scheduling.py --files 8 --repetitions 1 --dsn "$DATAFLOW_TEST_DATABASE_URL" --output-dir .e2e/operators
       - uses: actions/checkout@v4
+        if: matrix.python == '3.14t'
         with:
           ref: fe536bac72f6cd16cc1c4c347e4b8f27b6621dde
           path: .e2e/baseline-0.6
       - name: Internal component efficiency regression
+        if: matrix.python == '3.14t'
         run: |
           python scripts/benchmark_internal.py --baseline-source .e2e/baseline-0.6 --repetitions 2 --files 16 --interval 2 --idle-seconds 8 --dsn "$DATAFLOW_TEST_DATABASE_URL" --output .e2e/internal-efficiency/default.json
           python scripts/verify_efficiency.py .e2e/internal-efficiency/default.json
       - uses: actions/checkout@v4
+        if: matrix.python == '3.14t'
         with:
           ref: 8155264073b0cc3cab8abe6295d3aa0666381d14
           path: .e2e/baseline-0.7
       - name: Large DAG correctness and overhead regression
+        if: matrix.python == '3.14t'
         run: |
           PYTHONPATH="$PWD/.e2e/baseline-0.7/src" python scripts/benchmark_dag.py --steps 1000 --repetitions 2 --output .e2e/dag-runtime/before.json
           python scripts/benchmark_dag.py --steps 1000 --repetitions 2 --output .e2e/dag-runtime/after.json
           python scripts/verify_dag_efficiency.py .e2e/dag-runtime/before.json .e2e/dag-runtime/after.json
           python -c 'import json; print(json.dumps(json.load(open(".e2e/internal-efficiency/default.json"))["summary"]))'
+      - name: CPU process-slot scaling and idle noise
+        run: |
+          python scripts/benchmark_python_runtime.py --repetitions 2 --output .e2e/python-runtime/report.json
+          python scripts/verify_python_runtime.py .e2e/python-runtime/report.json
       - name: Native PostgreSQL and shared-file restore drill
         run: python scripts/verify_backup_restore.py --dsn "$DATAFLOW_TEST_DATABASE_URL" --pg-container "${{ job.services.postgres.id }}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: business-performance
+          name: business-performance-${{ matrix.python }}
           path: |
             .e2e/business-*.json
             .e2e/operators/*.json
             .e2e/backup-restore-evidence.json
             .e2e/internal-efficiency/*.json
             .e2e/dag-runtime/*.json
+            .e2e/python-runtime/*.json
           include-hidden-files: true
       - run: python -m build
       - uses: azure/setup-helm@v4.3.0
@@ -89,20 +104,31 @@ jobs:
       - run: python scripts/verify_chart.py /tmp/production.yaml
       - run: helm package charts/dataflowcore --destination dist
       - uses: actions/upload-artifact@v4
+        if: matrix.python == '3.14t'
         with:
           name: packages
           path: dist/*
   kubernetes:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11.6', '3.14t']
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.14t'
-      - run: docker build -t dataflowcore:e2e .
+          python-version: ${{ matrix.python }}
+      - run: docker build --build-arg PYTHON_VERSION=${{ matrix.python == '3.14t' && '3.14.8t' || matrix.python }} -t dataflowcore:e2e .
+      - name: Verify container Python profile
+        env:
+          EXPECTED_PYTHON: ${{ matrix.python }}
+        run: |
+          docker run --rm dataflowcore:e2e doctor > /tmp/container-runtime.json
+          python -c 'import json,os; info=json.load(open("/tmp/container-runtime.json")); expected=os.environ["EXPECTED_PYTHON"]; assert info["python_version"].startswith(expected.rstrip("t")); assert info["gil_enabled"] is (expected == "3.11.6"); print(info)'
       - run: docker build -t dataflowcore-console:e2e frontend
       - uses: helm/kind-action@v1.12.0
         with:
@@ -123,20 +149,24 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: e2e-evidence
+          name: e2e-evidence-${{ matrix.python }}
           path: .e2e/evidence.json
           include-hidden-files: true
 
   console:
     runs-on: ubuntu-latest
     timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11.6', '3.14t']
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.14t'
+          python-version: ${{ matrix.python }}
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -155,7 +185,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: console-browser-evidence
+          name: console-browser-evidence-${{ matrix.python }}
           path: |
             frontend/test-results
             frontend/playwright-report

@@ -1,0 +1,149 @@
+{
+  "runtime": {
+    "python": "3.11.6 (main, Oct  3 2023, 01:26:22) [Clang 17.0.1 ]",
+    "python_version": "3.11.6",
+    "free_threaded_build": false,
+    "gil_enabled": true,
+    "execution_model": "gil_process_slots"
+  },
+  "source_digest": "571a45b21ccc3bbf4e34b2434b0a8ab30b8a6a6fc442534e60dcab2f0402d944",
+  "trials": {
+    "single_slot": [
+      {
+        "files": 16,
+        "rounds": 4000000,
+        "slots": 1,
+        "elapsed_seconds": 6.473457124000106,
+        "files_per_second": 2.4716314163386643,
+        "cpu_seconds": 6.036220972999999,
+        "mean_busy_cores": 0.9324570870518212,
+        "runner_processes_used": 1,
+        "checksum": 434107403,
+        "single_attempt_successes": 16,
+        "validated_cache_reuse": true
+      },
+      {
+        "files": 16,
+        "rounds": 4000000,
+        "slots": 1,
+        "elapsed_seconds": 6.729164942999887,
+        "files_per_second": 2.3777095873752114,
+        "cpu_seconds": 6.223382420000001,
+        "mean_busy_cores": 0.9248372528710217,
+        "runner_processes_used": 1,
+        "checksum": 434107403,
+        "single_attempt_successes": 16,
+        "validated_cache_reuse": true
+      }
+    ],
+    "four_slots": [
+      {
+        "files": 16,
+        "rounds": 4000000,
+        "slots": 4,
+        "elapsed_seconds": 1.8440674230000695,
+        "files_per_second": 8.676472346097833,
+        "cpu_seconds": 6.2890816990000005,
+        "mean_busy_cores": 3.410440215232718,
+        "runner_processes_used": 4,
+        "checksum": 434107403,
+        "single_attempt_successes": 16,
+        "validated_cache_reuse": true
+      },
+      {
+        "files": 16,
+        "rounds": 4000000,
+        "slots": 4,
+        "elapsed_seconds": 1.843263363999995,
+        "files_per_second": 8.680257152878585,
+        "cpu_seconds": 6.485219791000001,
+        "mean_busy_cores": 3.5183359674260957,
+        "runner_processes_used": 4,
+        "checksum": 434107403,
+        "single_attempt_successes": 16,
+        "validated_cache_reuse": true
+      }
+    ]
+  },
+  "summary": {
+    "single_slot": {
+      "elapsed_seconds": 6.6013110334999965,
+      "files_per_second": 2.424670501856938,
+      "mean_busy_cores": 0.9286471699614214
+    },
+    "four_slots": {
+      "elapsed_seconds": 1.8436653935000322,
+      "files_per_second": 8.67836474948821,
+      "mean_busy_cores": 3.4643880913294067
+    }
+  },
+  "idle": {
+    "seconds": 8.00019334200033,
+    "worker_http_requests": 39,
+    "log_bytes": 0,
+    "cpu_seconds": null,
+    "idle_workers": [
+      {
+        "session_id": "198b525a-0cc5-4c4e-a257-c23d061b3141",
+        "name": "00940ada6e74",
+        "pool": "default",
+        "runtime_version": "0.9.0",
+        "slots": 4,
+        "cpu": 2,
+        "memory_mb": 1024,
+        "last_seen": 1792125763.2859826,
+        "draining": 0,
+        "online": true,
+        "active_tasks": 0,
+        "free_slots": 4,
+        "telemetry_age_seconds": 0.07302308082580566,
+        "scheduler": {
+          "active_operators": 0,
+          "aging_seconds": 2.0,
+          "cpu": 0.0,
+          "cpu_capacity": 2.0,
+          "io_concurrency": 32,
+          "io_operators": 0,
+          "memory_capacity_mb": 1024,
+          "memory_mb": 0,
+          "oldest_wait_seconds": 0,
+          "peak_cpu": 0.0,
+          "peak_io_operators": 0,
+          "peak_memory_mb": 0,
+          "policy": "fair_backfill_with_aging",
+          "protected_resources": null,
+          "waiting_by_reason": {
+            "aging": 0,
+            "cpu": 0,
+            "cpu_pool": 0,
+            "io_concurrency": 0,
+            "io_pool": 0,
+            "memory": 0
+          },
+          "waiting_operators": 0
+        },
+        "runtime": {
+          "cpu_dag_workers_auto": true,
+          "cpu_dag_workers_per_slot": 1,
+          "execution_model": "gil_process_slots",
+          "free_threaded_build": false,
+          "gil_enabled": true,
+          "processes": 5,
+          "python": "3.11.6 (main, Oct  3 2023, 01:26:22) [Clang 17.0.1 ]",
+          "python_version": "3.11.6",
+          "runner_processes": 4,
+          "sampled_at": 1792125761.3232048,
+          "sampled_rss_mb": null,
+          "slots_auto": false
+        }
+      }
+    ],
+    "configuration": {
+      "slots": 4,
+      "interval_seconds": 0.2,
+      "lease_seconds": 3
+    }
+  },
+  "speedup_four_over_one": 3.5791934379710026,
+  "caveat": "Pure Python CPU files; shared hardware timing is not a production model SLA"
+}

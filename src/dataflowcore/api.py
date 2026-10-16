@@ -15,7 +15,7 @@ from .contracts import APIBusy, Backpressure, Conflict, Invalid, Missing, Paused
 from .control_lock import ControlLock, ControlLost
 from .observability import FailureLog, HTTPMetrics, route_label
 from .resources import WAIT_REASONS
-from .runtime import under_root
+from .runtime import runtime_capabilities, under_root
 from .store import Store
 from .uploads import DEFAULT_DIR, DEFAULT_MAX_BYTES, UploadError, Uploads
 
@@ -246,7 +246,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(403, {"error": "browser origin is not allowed"})
                 return
             if method == "GET" and path in ("/healthz", "/version"):
-                self.send_json(200, {"ok": True, "version": __version__})
+                info = {"ok": True, "version": __version__}
+                if path == "/version":
+                    info["runtime"] = runtime_capabilities()
+                self.send_json(200, info)
                 return
             if method == "GET" and path == "/readyz":
                 if (
